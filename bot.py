@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
+target_channel_ids_str = os.getenv("TARGET_CHANNEL_IDS", "")
+TARGET_CHANNEL_IDS = {
+    int(cid.strip())
+    for cid in target_channel_ids_str.split(",")
+    if cid.strip().isdigit()
+}
+
 intents = discord.Intents.default()
 intents.messages = True  # メッセージ関連のイベントを処理するために必要
 intents.message_content = True  # メッセージ内容を読み取るために必要
@@ -43,12 +50,28 @@ async def on_message(message):
         )
         return
 
-    author_name = message.author.display_name
-    user_input = message.content
+    # 特定チャンネルでの応答判定
+    is_target_channel = message.channel.id in TARGET_CHANNEL_IDS
 
-    if bot.user.mentioned_in(message):
-        # メンションを取り除く
-        user_input = user_input.replace(bot.user.mention, "").strip()
+    # その他のチャンネルでのメンション判定
+    is_mentioned = bot.user.mentioned_in(message)
+
+    # 応答処理を実行するかどうかのフラグ
+    should_respond = False
+
+    if is_target_channel:
+        should_respond = True
+    elif is_mentioned:
+        should_respond = True
+    else:
+        pass
+
+    if should_respond:
+        author_name = message.author.display_name
+        user_input = message.content
+        if is_mentioned:
+            # メンションを取り除く
+            user_input = user_input.replace(bot.user.mention, "").strip()
         async with message.channel.typing():
             bot_reply = await handle_shared_discord_message(author_name, user_input)
         # メンションを付与
@@ -216,7 +239,6 @@ def initialize_chat_session():
     history_from_db = load_history_from_db(limit=100)
     shared_chat_session = gemini_model.start_chat(history=history_from_db)
     print("チャットセッションがDB履歴で初期化されました。")
-    print(history_from_db)
 
 
 async def handle_shared_discord_message(author_name, user_message_content):
