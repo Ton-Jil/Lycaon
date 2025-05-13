@@ -1,0 +1,14 @@
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'compute'
+      - 'ssh'
+      - '--zone=${_ZONE}'  # 置換変数 _ZONE を使用
+      - '${_INSTANCE_NAME}' # 置換変数 _INSTANCE_NAME を使用
+      - '--command=cd ${_PROJECT_DIR_ON_VM}/Lycaon/build && ./deploy.sh'
+      # '--quiet'
+      # '--ssh-flag="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"' # 開発時のみ推奨
+
+# (オプション) タイムアウト設定
+timeout: '1200s'
