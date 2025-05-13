@@ -74,9 +74,8 @@ async def on_message(message):
             user_input = user_input.replace(bot.user.mention, "").strip()
         async with message.channel.typing():
             bot_reply = await handle_shared_discord_message(author_name, user_input)
-        # メンションを付与
-        bot_reply = f"{message.author.mention} {bot_reply}"
-        await message.channel.send(bot_reply)
+        # 返信で応答
+        await message.reply(bot_reply, mention_author=False)
 
 
 initial_prompt_parts = [
