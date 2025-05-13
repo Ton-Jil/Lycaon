@@ -6,7 +6,7 @@ steps:
       - 'ssh'
       - '--zone=${_ZONE}'  # 置換変数 _ZONE を使用
       - '${_INSTANCE_NAME}' # 置換変数 _INSTANCE_NAME を使用
-      - '--command=cd ${_PROJECT_DIR_ON_VM}/Lycaon/builder && ./deploy.sh'
+      - '--command=cd ${_PROJECT_DIR_ON_VM}/Lycaon && git pull origin main && ./builder/deploy.sh'
       # '--quiet'
       # '--ssh-flag="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"' # 開発時のみ推奨
 

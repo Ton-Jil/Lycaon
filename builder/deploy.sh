@@ -7,8 +7,8 @@ VENV_PATH="venv/bin/activate" # WorkingDirectoryからの相対パス、また�
 echo "デプロイを開始します..."
 
 # 1. 最新のコードを取得
-git pull origin main # または対象のブランチ
-echo "コードを更新しました。"
+# git pull origin main # または対象のブランチ
+# echo "コードを更新しました。"
 
 # 2. 仮想環境を有効化 (もしあれば)
 if [ -f "$VENV_PATH" ]; then
