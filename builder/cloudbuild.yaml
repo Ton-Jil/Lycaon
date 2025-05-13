@@ -10,5 +10,8 @@ steps:
       # '--quiet'
       # '--ssh-flag="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"' # 開発時のみ推奨
 
+options:
+  logging: CLOUD_LOGGING_ONLY
+
 # (オプション) タイムアウト設定
 timeout: '1200s'
