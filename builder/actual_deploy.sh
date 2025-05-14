@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e # エラーが発生したらスクリプトを終了
 
+echo "--- SSHログインユーザー情報 ---"
+echo "実行ユーザー (whoami): $(whoami)"
+echo "ユーザーID詳細 (id): $(id)"
+echo "ホームディレクトリ (HOME): $HOME"
+echo "現在のディレクトリ (pwd): $(pwd)" # このpwdがリポジトリのルートディレクトリであることを確認
+echo "--------------------------"
+
 # 仮想環境のパス (例)
 VENV_PATH="venv/bin/activate" # WorkingDirectoryからの相対パス、またはフルパス
 
 echo "デプロイを開始します..."
-
-# 1. 最新のコードを取得
-# git pull origin main # または対象のブランチ
-# echo "コードを更新しました。"
 
 # 2. 仮想環境を有効化 (もしあれば)
 if [ -f "$VENV_PATH" ]; then
