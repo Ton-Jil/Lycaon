@@ -173,12 +173,33 @@ sqlite3.register_converter(
 )  # TIMESTAMP型も同様に扱う場合
 
 
+def get_history_table_name(character_key):
+    # キャラクターキーから安全なテーブル名を生成
+    # ここでは簡易的にキーのプレフィックスとするが、より厳密な検証が必要な場合がある
+    if (
+        not isinstance(character_key, str) or not character_key.isalnum()
+    ):  # 例: 英数字のみを許可
+        print(f"警告: 不正なキャラクターキーが指定されました: {character_key}")
+        # 不正なキーの場合はデフォルトやエラーを示すテーブル名を返す
+        return "history_default_invalid"
+    return f"history_{character_key}"
+
+
 def create_table_if_not_exists():
+    global active_character_key
+
+    if active_character_key is None:
+        raise ValueError(
+            "アクティブなキャラクターキーが設定されていません。テーブル名決定できません。"
+        )
+
+    table_name = get_history_table_name(active_character_key)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """
-    CREATE TABLE IF NOT EXISTS conversation_history (
+        f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         role TEXT NOT NULL,
         author_name TEXT,
@@ -192,11 +213,20 @@ def create_table_if_not_exists():
 
 
 def add_message_to_db(role, author_name, content):
+    global active_character_key
+
+    if active_character_key is None:
+        raise ValueError(
+            "アクティブなキャラクターキーが設定されていません。メッセージ保存できません。"
+        )
+
+    table_name = get_history_table_name(active_character_key)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """
-    INSERT INTO conversation_history (role, author_name, content, timestamp)
+        f"""
+    INSERT INTO {table_name} (role, author_name, content, timestamp)
     VALUES (?, ?, ?, ?)
     """,
         (role, author_name, content, datetime.datetime.now()),
@@ -208,41 +238,99 @@ def add_message_to_db(role, author_name, content):
 PROMPT_DIR = "character_prompts"
 
 
-def load_character_definition(character_filename_key):
+def _load_raw_character_data(character_filename_key):
+    """指定されたキーのキャラクターデータをJSONファイルからそのまま読み込むヘルパー関数"""
+    prompt_file_path = os.path.join(PROMPT_DIR, f"{character_filename_key}.json")
+    if not os.path.exists(prompt_file_path):
+        print(f"警告: キャラクターデータファイルが見つかりません: {prompt_file_path}")
+        return None
+    try:
+        with open(prompt_file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        print(
+            f"エラー: キャラクターデータファイルの読み込み/解析に失敗 ({prompt_file_path}): {e}"
+        )
+        return None
+
+
+def load_character_definition(main_character_key, processed_relations=None):
     """
     指定されたキー (ファイル名から拡張子を除いたもの) に基づいて
     キャラクタープロンプトファイルを読み込み、初期履歴と表示名を返す。
     """
-    prompt_file_path = os.path.join(PROMPT_DIR, f"{character_filename_key}.json")
-    if not os.path.exists(prompt_file_path):
+    if processed_relations is None:
+        processed_relations = set()
+
+    if main_character_key in processed_relations:
+        return [], main_character_key
+
+    processed_relations.add(main_character_key)
+
+    main_char_data = _load_raw_character_data(main_character_key)
+    if not main_char_data:
+        return [], main_character_key
+
+    display_name = main_char_data.get("character_name_display", main_character_key)
+    system_instruction_user = main_char_data.get(
+        "system_instruction_user", ""
+    )  # メインキャラの基本指示
+    system_instruction_user += "ユーザーの発言にはユーザー名が付与されています（例：「ユーザーA: こんにちは」）。応答の際には、誰のどの発言に対して応答しているのかを意識してください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
+    system_instruction_user += main_char_data.get("character_metadata", "")
+    initial_model_response = main_char_data.get("initial_model_response", "")
+
+    if not system_instruction_user or not initial_model_response:
         print(
-            f"警告: キャラクタープロンプトファイルが見つかりません: {prompt_file_path}"
+            f"警告: メインキャラクター「{display_name}」のプロンプト基本情報が不完全です。"
         )
-        return [], "デフォルトキャラクター"  # プロンプトリストと表示名
 
-    try:
-        with open(prompt_file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    # 周辺人物の基本情報の文字列を構築
+    supplementary_related_info_parts = []
+    if "related_characters" in main_char_data and isinstance(
+        main_char_data["related_characters"], list
+    ):
+        related_character_keys = main_char_data["related_characters"]
+        if related_character_keys:  # リストが空でない場合
+            supplementary_related_info_parts.append(
+                "\n\n--- 参考: あなたと関わりのある人物の詳細情報 ---"
+            )
+            for related_key in related_character_keys:
+                if (
+                    isinstance(related_key, str)
+                    and related_key not in processed_relations
+                ):
+                    related_data = _load_raw_character_data(related_key)
+                    if related_data:
+                        related_display_name = related_data.get(
+                            "character_name_display", related_key
+                        )
+                        related_description = related_data.get(
+                            "character_metadata", "特に公表されている説明はありません。"
+                        )  # 短い説明
 
-        user_prompt_text = data.get("system_instruction_user", "")
-        model_response_text = data.get("initial_model_response", "")
-        display_name = data.get("character_name_display", character_filename_key)
+                        info_line = (
+                            f"\n- {related_display_name} ({related_description})"
+                        )
+                        supplementary_related_info_parts.append(info_line)
 
-        if not user_prompt_text or not model_response_text:
-            print(f"警告: プロンプトファイル {prompt_file_path} の内容が不完全です。")
-            return [], display_name  # 不完全なら空のプロンプト
+    # メインキャラクターのシステムプロンプトに、抽出した周辺人物の基本情報を「参考情報」として追記
+    if (
+        len(supplementary_related_info_parts) > 1
+    ):  # ヘッダー行があるので1より大きいかで判定
+        system_instruction_user += "".join(supplementary_related_info_parts)
+        # メインプロンプト内で関係性を記述してもらうことを促す一文は、
+        # メインの system_instruction_user 自体に含めてもらう方が自然かもしれません。
+        # 例: 「あなたは以下の人物たちのことも知っています。彼らとの関係性はあなたの設定に基づきます。」
+        # system_instruction_user += "\n上記はあなたが知っている人物のリストです。彼らとの具体的な関係性やあなたの考えは、あなたの基本設定に基づいて判断してください。"
 
-        initial_prompts = [
-            {"role": "user", "parts": [{"text": user_prompt_text}]},
-            {"role": "model", "parts": [{"text": model_response_text}]},
-        ]
-        print(f"キャラクター「{display_name}」のプロンプトをロードしました。")
-        return initial_prompts, display_name
-    except Exception as e:
-        print(
-            f"エラー: キャラクタープロンプトファイルの読み込み/解析に失敗 ({prompt_file_path}): {e}"
-        )
-        return [], "エラーキャラクター"
+    final_initial_prompts = [
+        {"role": "user", "parts": [{"text": system_instruction_user}]},
+        {"role": "model", "parts": [{"text": initial_model_response}]},
+    ]
+    # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
+    print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
+    return final_initial_prompts, display_name
 
 
 def get_setting_from_db(key, default_value=None):
@@ -273,23 +361,42 @@ def set_setting_in_db(key, value):
 
 
 def load_history_from_db(limit=100):  # 例: 直近100件のやり取りを読み込む
+    global active_character_key
+
+    if active_character_key is None:
+        raise ValueError(
+            "アクティブなキャラクターキーが設定されていません。履歴読み込みできません。"
+        )
+
+    table_name = get_history_table_name(active_character_key)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     # timestampの降順で最新N件を取得し、それをさらに昇順に並べ替える
     # (SQLiteではサブクエリやウィンドウ関数が使えるが、シンプルに全件取得してPython側でハンドリングも可)
     # ここではシンプルに最新N件のメッセージを取得（userとmodelそれぞれを1件と数える）
-    cursor.execute(
-        """
-    SELECT role, author_name, content FROM (
-        SELECT role, author_name, content, timestamp
-        FROM conversation_history
-        ORDER BY timestamp DESC
-        LIMIT ?
-    ) ORDER BY timestamp ASC
-    """,
-        (limit,),
-    )
-    rows = cursor.fetchall()
+    try:
+        cursor.execute(
+            f"""
+        SELECT role, author_name, content FROM (
+            SELECT role, author_name, content, timestamp
+            FROM {table_name}
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ) ORDER BY timestamp ASC
+        """,
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        print(
+            f"テーブル {table_name} から {len(rows)} 件の履歴を読み込みました。"
+        )  # テーブル名を出力
+    except sqlite3.OperationalError as e:
+        # テーブルが存在しない場合などに発生するエラー
+        print(
+            f"警告: テーブル {table_name} が見つかりません。新しい履歴を開始します。エラー: {e}"
+        )
+        rows = []  # テーブルがない場合は履歴なしとして扱う
     conn.close()
 
     history_for_model = []
@@ -313,6 +420,7 @@ def load_history_from_db(limit=100):  # 例: 直近100件のやり取りを読�
     return history_for_model
 
 
+active_character_key = None
 active_character_display_name = (
     "デフォルト"  # 現在のキャラクター表示名を保持するグローバル変数
 )
@@ -322,7 +430,7 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, gemini_model, active_character_display_name
+    global shared_chat_session, gemini_model, active_character_key, active_character_display_name
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
@@ -330,6 +438,7 @@ def initialize_chat_session(character_key_to_load=None):
     initial_character_prompts, display_name = load_character_definition(
         character_key_to_load
     )
+    active_character_key = character_key_to_load
     active_character_display_name = display_name  # グローバルな表示名を更新
 
     if not initial_character_prompts:
