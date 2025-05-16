@@ -329,7 +329,7 @@ def load_character_definition(main_character_key, processed_relations=None):
         {"role": "model", "parts": [{"text": initial_model_response}]},
     ]
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
+    # print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
