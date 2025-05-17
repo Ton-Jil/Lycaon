@@ -338,6 +338,7 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user += "ユーザーの発言にはユーザー名が付与されています（例：「ユーザーA: こんにちは」）。応答の際には、誰のどの発言に対して応答しているのかを意識してください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
     system_instruction_user += main_char_data.get("character_metadata", "")
     initial_model_response = main_char_data.get("initial_model_response", "")
+    conversation_examples_list = main_char_data.get("conversation_examples", [])
 
     if not system_instruction_user or not initial_model_response:
         print(
@@ -387,6 +388,19 @@ def load_character_definition(main_character_key, processed_relations=None):
         {"role": "user", "parts": [{"text": system_instruction_user}]},
         {"role": "model", "parts": [{"text": initial_model_response}]},
     ]
+    for example_message in conversation_examples_list:
+        # 各要素がChatSessionのhistoryとして有効な構造か、簡単な検証を行うとより安全
+        if (
+            isinstance(example_message, dict)
+            and example_message.get("role") in ["user", "model"]
+            and isinstance(example_message.get("parts"), list)
+        ):
+            final_initial_prompts.append(example_message)
+        else:
+            print(
+                f"警告: キャラクター「{display_name}」の conversation_examples 内の要素の構造が不正です: {example_message}"
+            )
+            # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
     # print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
     return final_initial_prompts, display_name
