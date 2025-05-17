@@ -115,6 +115,63 @@ async def on_message(message):
             )
         return
 
+    image_contents = []
+    if message.attachments:
+        print(
+            f"画像付きメッセージを受信しました from {message.author.display_name} in channel {message.channel.name}"
+        )
+
+        # 応答を生成するかどうかの基本的なフラグ（テキスト応答のロジックとは別に判定しても良い）
+        # 例えば、画像付きメッセージの場合はメンションの有無にかかわらず常に画像を処理するなど
+        process_image_message = True  # 画像付きメッセージは常に処理すると仮定
+
+        if process_image_message:
+            author_name = message.author.display_name
+
+            # ボットが処理中であることを示す（タイピング表示）
+            async with message.channel.typing():
+                # 添付ファイルごとに処理（複数の画像がある場合）
+                for attachment in message.attachments:
+                    # 添付ファイルが画像であることを確認 (MIMEタイプをチェック)
+                    if attachment.content_type and attachment.content_type.startswith(
+                        "image/"
+                    ):
+                        try:
+                            # 画像データをダウンロード（非同期）
+                            image_data_bytes = await attachment.read()
+                            print(
+                                f"画像をダウンロードしました: {attachment.filename} ({attachment.content_type})"
+                            )
+
+                            # Gemini APIに渡す入力コンテンツを準備
+                            # テキストと画像を組み合わせてリストとして渡します。
+                            # google-generativeai ライブラリは、bytes と MIMEタイプから Part オブジェクトへの変換を内部で行うか、
+                            # generate_content / send_message にそのまま渡せるように設計されています。
+
+                            # 画像データを Part オブジェクト形式に変換して追加
+                            # Part.from_bytes を使うのが明示的で推奨
+                            image_part = {
+                                "data": image_data_bytes,
+                                "mime_type": attachment.content_type,
+                            }
+                            image_contents.append(image_part)
+
+                        except Exception as e:
+                            print(
+                                f"画像処理またはGemini API呼び出し中にエラーが発生しました: {e}"
+                            )
+                            # APIエラーの詳細をログに出力することも重要
+                            if hasattr(e, "response") and hasattr(
+                                e.response, "prompt_feedback"
+                            ):
+                                print(f"API Feedback: {e.response.prompt_feedback}")
+                            await message.reply(
+                                f"画像の処理中にエラーが発生しました。",
+                                mention_author=False,
+                            )
+
+    # ★★★ ここまで画像添付ファイルの処理 ★★★
+
     if should_respond:
         author_name = message.author.display_name
         user_input = message.content
@@ -122,7 +179,9 @@ async def on_message(message):
             # メンションを取り除く
             user_input = user_input.replace(bot.user.mention, "").strip()
         async with message.channel.typing():
-            bot_reply = await handle_shared_discord_message(author_name, user_input)
+            bot_reply = await handle_shared_discord_message(
+                author_name, user_input, image_contents
+            )
         # 返信で応答
         await message.reply(bot_reply, mention_author=False)
 
@@ -470,7 +529,9 @@ def initialize_chat_session(character_key_to_load=None):
     )
 
 
-async def handle_shared_discord_message(author_name, user_message_content):
+async def handle_shared_discord_message(
+    author_name, user_message_content, image_contents=None
+):
     """
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
     """
@@ -501,8 +562,12 @@ async def handle_shared_discord_message(author_name, user_message_content):
             if len(shared_chat_session.history) > 2:  # 人格設定プロンプトがある前提
                 del shared_chat_session.history[2 : 2 + num_to_delete]
 
+        send_contents = [message_for_api]
+        if image_contents:
+            for image_part in image_contents:
+                send_contents.append(image_part)
         # APIに送信。メモリ上のshared_chat_session.historyも更新される
-        response = await shared_chat_session.send_message_async(message_for_api)
+        response = await shared_chat_session.send_message_async(send_contents)
         bot_response_text = response.text
 
         # ボットの応答をDBに保存
