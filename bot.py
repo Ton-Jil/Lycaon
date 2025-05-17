@@ -5,6 +5,7 @@ import sqlite3
 
 import discord
 import google.generativeai as genai
+import pytz
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -335,7 +336,7 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user = main_char_data.get(
         "system_instruction_user", ""
     )  # メインキャラの基本指示
-    system_instruction_user += "ユーザーの発言にはユーザー名が付与されています（例：「ユーザーA: こんにちは」）。応答の際には、誰のどの発言に対して応答しているのかを意識してください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
+    system_instruction_user += "ユーザーの発言にはユーザー名が付与されています（例：「ユーザーA: こんにちは」）。応答の際には、誰のどの発言に対して応答しているのかを意識してください。また、ユーザーの発言には発言時刻も付与されています。必要であればこの情報も活用してください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
     system_instruction_user += main_char_data.get("character_metadata", "")
     initial_model_response = main_char_data.get("initial_model_response", "")
     conversation_examples_list = main_char_data.get("conversation_examples", [])
@@ -543,6 +544,20 @@ def initialize_chat_session(character_key_to_load=None):
     )
 
 
+# 東京のタイムゾーンを設定
+tokyo_tz = pytz.timezone("Asia/Tokyo")
+
+
+def get_current_time_japan():
+    """日本標準時 (JST) の現在の日時を取得し、指定フォーマットの文字列で返す"""
+    now_tokyo = datetime.datetime.now(tokyo_tz)
+    # AIに分かりやすいフォーマットで返します。必要に応じて調整してください。
+    return now_tokyo.strftime(
+        "%Y年%m月%d日 (%A) %H時%M分%S秒 JST"
+    )  # 例: 2025年05月17日 (金曜日) 22時12分30秒 JST
+    # より簡潔な形式でも良い: "%Y/%m/%d %H:%M"
+
+
 async def handle_shared_discord_message(
     author_name, user_message_content, image_contents=None
 ):
@@ -557,7 +572,8 @@ async def handle_shared_discord_message(
         if not shared_chat_session:
             return "申し訳ありません、ボットのチャット機能が正しく起動していません。管理者にご連絡ください。"
 
-    message_for_api = f"{author_name}: {user_message_content}"
+    current_time_str = get_current_time_japan()
+    message_for_api = f"{current_time_str}\n{author_name}: {user_message_content}"
     print(
         f"{author_name}: {user_message_content}"
     )  # Discord側にエコーバックされるので必須ではない
