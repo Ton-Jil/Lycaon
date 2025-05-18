@@ -465,7 +465,7 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user = main_char_data.get(
         "system_instruction_user", ""
     )  # メインキャラの基本指示
-    system_instruction_user += "ユーザーの発言にはユーザー名が付与されています（例：「ユーザーA: こんにちは」）。応答の際には、誰のどの発言に対して応答しているのかを意識してください。また、ユーザーの発言には発言時刻も付与されています。必要であればこの情報も活用してください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
+    system_instruction_user += "ユーザーの発言には改行区切りで発言時間、ユーザー名、発言内容が付与されています。\n発言の例\n時間\nユーザーA\nこんにちは\n\n応答の際には、誰のどの発言に対して応答しているのかを意識して、応答内容に含めるときはこの付与されたユーザー名を取り除いてから応答してください。また、会話の時間も意識してください。また、ユーザーの入力した発言時間、ユーザー名の内容を回答の最初に入れることは絶対に避けてください。ユーザーの発言内容を理解した上で、必ずあなた自身の言葉で応答してください。ユーザーの話し方に安易に影響されないようにしてください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
     system_instruction_user += main_char_data.get("character_metadata", "")
     initial_model_response = main_char_data.get("initial_model_response", "")
     conversation_examples_list = main_char_data.get("conversation_examples", [])
@@ -708,7 +708,7 @@ async def handle_shared_discord_message(
             return "申し訳ありません、ボットのチャット機能が正しく起動していません。管理者にご連絡ください。"
 
     current_time_str = get_current_time_japan()
-    message_for_api = f"{current_time_str}\n{author_name}: {user_message_content}"
+    message_for_api = f"{current_time_str}\n{author_name}\n{user_message_content}"
     print(
         f"{author_name}: {user_message_content}"
     )  # Discord側にエコーバックされるので必須ではない
@@ -725,7 +725,7 @@ async def handle_shared_discord_message(
                 f"現在の履歴長 ({len(current_history_list)}) が最大長 ({MAX_HISTORY_LENGTH}) を超えたため、履歴を整理します。"
             )
 
-            pruned_history: list[types.Content]
+            pruned_history: list
 
             if initial_prompts_count >= MAX_HISTORY_LENGTH:
                 # MAX_HISTORY_LENGTH が初期プロンプト数よりも小さいか等しい場合、
