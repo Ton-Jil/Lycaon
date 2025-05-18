@@ -28,6 +28,170 @@ bot = commands.Bot(
 )  # コマンドのプレフィックスを'!'に設定
 
 
+@bot.command(name="resetchat")
+@commands.has_permissions(administrator=True)  # 管理者権限が必要な場合
+async def resetchat(ctx):
+    """
+    現在のキャラクターの会話履歴をリセットします（管理者限定）。
+    """
+    global shared_chat_session, active_character_key
+
+    if active_character_key is None:
+        await ctx.send("エラー：現在アクティブなキャラクターが設定されていません。")
+        return
+
+    table_name = get_history_table_name(active_character_key)
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # 履歴テーブルの存在チェック
+        cursor.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+        )
+        if cursor.fetchone():
+            # テーブルが存在すれば履歴を削除
+            cursor.execute(f"DELETE FROM {table_name}")
+            conn.commit()
+            print(f"テーブル {table_name} の会話履歴を削除しました。")
+            # await ctx.send(f"現在のキャラクター「{active_character_display_name}」の会話履歴をリセットしました。", mention_author=False) # active_character_display_name が使えるなら
+            await ctx.send(
+                f"現在のキャラクター「{active_character_key}」の会話履歴をリセットしました。",
+                mention_author=False,
+            )
+        else:
+            # テーブルが存在しない場合はリセットする履歴がない
+            print(
+                f"警告：テーブル {table_name} が見つかりませんでした。リセットする履歴はありません。"
+            )
+            await ctx.send(
+                f"現在のキャラクター「{active_character_key}」の会話履歴は存在しませんでした。リセットは不要です。",
+                mention_author=False,
+            )
+
+        # メモリ上のセッションを再初期化
+        # initialize_chat_session 関数が DB から履歴を読み込む際、
+        # 上記で削除したため履歴なしでセッションが開始されます。
+        initialize_chat_session(active_character_key)
+        print("チャットセッションを再初期化しました。")
+
+    except sqlite3.Error as e:
+        print(f"データベースエラーが発生しました: {e}")
+        await ctx.send(
+            f"履歴のリセット中にデータベースエラーが発生しました。",
+            mention_author=False,
+        )
+    except Exception as e:
+        print(f"予期せぬエラーが発生しました: {e}")
+        await ctx.send(
+            f"履歴のリセット中にエラーが発生しました。", mention_author=False
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
+@resetchat.error
+async def resetchat_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("このコマンドを実行する権限がありません。", mention_author=False)
+    else:
+        # その他のエラーはコンソールに出力するなど
+        print(f"コマンドエラー: {error}")
+        await ctx.send("コマンド実行中にエラーが発生しました。", mention_author=False)
+
+
+@bot.command(name="setchar")
+@commands.has_permissions(administrator=True)  # 例: 管理者のみ変更可能
+async def setchar_command(ctx, char_key: str):
+    """
+    ボットのキャラクターを変更します（管理者限定）。
+    使用法: !setchar <キャラクターキー>
+    """
+    # 利用可能なキャラクターかチェック (PROMPT_DIR内のファイル名リストと比較など)
+    available_chars = [
+        f.split(".")[0] for f in os.listdir(PROMPT_DIR) if f.endswith(".json")
+    ]
+    if char_key in available_chars:
+        try:
+            initialize_chat_session(char_key)  # 新しいキャラでセッション再初期化
+            # active_character_display_name が更新されていることを利用
+            await ctx.send(
+                f"キャラクターを「{active_character_display_name}」に変更しました。",
+                mention_author=False,
+            )
+        except Exception as e:
+            await ctx.send(
+                f"キャラクター変更中にエラーが発生しました: {e}",
+                mention_author=False,
+            )
+    else:
+        await ctx.send(
+            f"指定されたキャラクター「{char_key}」は見つかりません。",
+            mention_author=False,
+        )
+
+
+@setchar_command.error
+async def setchar_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("キャラクターを変更する権限がありません。", mention_author=False)
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(
+            "キャラクターキーを指定してください。\n使用法: `!setchar <キャラクターキー>`",
+            mention_author=False,
+        )
+    else:
+        print(f"setchar コマンドエラー: {error}")
+        await ctx.send("コマンド実行中にエラーが発生しました。", mention_author=False)
+
+
+# --- 利用可能なキャラクター一覧を表示するコマンド ---
+@bot.command(name="listchars")
+async def listchars_command(ctx):
+    """
+    利用可能なキャラクターの一覧を表示します。
+    使用法: !listchars
+    """
+    available_chars_info = []
+    # os.listdir(PROMPT_DIR) が存在するかどうかのチェックを追加するとより安全
+    if not os.path.exists(PROMPT_DIR):
+        await ctx.send(
+            f"キャラクター設定ディレクトリ `{PROMPT_DIR}` が見つかりません。",
+            mention_author=False,
+        )
+        return
+
+    for f_name in os.listdir(PROMPT_DIR):
+        if f_name.endswith(".json"):
+            char_key = f_name.split(".")[0]
+            # 簡単な説明などをJSONから読み込んで表示するのも良い
+            # load_character_definition は初期プロンプトも読むので、表示名だけなら別のヘルパー関数が良いかも
+            # または、ここではファイル名キーと表示名のみを表示する
+            try:
+                _, display_name = load_character_definition(
+                    char_key
+                )  # 表示名取得のため一時的に読み込み
+                available_chars_info.append(
+                    f"- `{char_key}` ({display_name}) {'(現在使用中)' if active_character_key == char_key else ''}"
+                )
+            except Exception as e:
+                print(f"キャラクター情報読み込みエラー ({char_key}): {e}")
+                available_chars_info.append(f"- `{char_key}` (情報の読み込みに失敗)")
+
+    if available_chars_info:
+        await ctx.send(
+            "利用可能なキャラクター:\n" + "\n".join(available_chars_info),
+            mention_author=False,
+        )
+    else:
+        await ctx.send(
+            "利用可能なキャラクター設定ファイルが見つかりません。",
+            mention_author=False,
+        )
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user.name} がDiscordに接続しました！")
@@ -39,6 +203,21 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:  # Bot自身のメッセージは無視
         return
+
+    # コマンドとして処理を試みる
+    # もしこのメッセージがコマンドとして認識され、処理が成功または失敗した場合、
+    # ctx.command は None 以外になります。
+    await bot.process_commands(message)
+
+    # コマンドとして処理されたメッセージ（プレフィックスで始まるメッセージ）であれば、
+    # ここで on_message のそれ以降の処理を終了します。
+    # ctx.command が None でないこと、または単純にプレフィックスで始まるかで判定します。
+    # 単純にプレフィックスで始まるかで判定する方が、未定義コマンドへのAI応答も防げるので推奨です。
+    if message.content.startswith(bot.command_prefix):
+        print(
+            f"コマンドメッセージを検出しました: {message.content[:50]}..."
+        )  # デバッグ用
+        return  # コマンドとして処理されたので、通常のメッセージ処理は行わない
 
     if not shared_chat_session:
         await message.channel.send(
@@ -61,60 +240,6 @@ async def on_message(message):
         should_respond = True
     else:
         pass
-
-    if message.content.startswith("!setchar "):
-        if message.author.guild_permissions.administrator:  # 例: 管理者のみ変更可能
-            char_key = message.content.split(" ", 1)[1].strip()
-            # 利用可能なキャラクターかチェック (PROMPT_DIR内のファイル名リストと比較など)
-            available_chars = [
-                f.split(".")[0] for f in os.listdir(PROMPT_DIR) if f.endswith(".json")
-            ]
-            if char_key in available_chars:
-                try:
-                    initialize_chat_session(
-                        char_key
-                    )  # 新しいキャラでセッション再初期化
-                    await message.reply(
-                        f"キャラクターを「{active_character_display_name}」に変更しました。",
-                        mention_author=False,
-                    )
-                except Exception as e:
-                    await message.reply(
-                        f"キャラクター変更中にエラーが発生しました: {e}",
-                        mention_author=False,
-                    )
-            else:
-                await message.reply(
-                    f"指定されたキャラクター「{char_key}」は見つかりません。",
-                    mention_author=False,
-                )
-        else:
-            await message.reply(
-                "キャラクターを変更する権限がありません。", mention_author=False
-            )
-        return  # コマンド処理後は通常の会話応答をしない
-
-    if message.content == "!listchars":
-        available_chars_info = []
-        for f_name in os.listdir(PROMPT_DIR):
-            if f_name.endswith(".json"):
-                char_key = f_name.split(".")[0]
-                # 簡単な説明などをJSONから読み込んで表示するのも良い
-                _, display_name = load_character_definition(
-                    char_key
-                )  # 表示名取得のため
-                available_chars_info.append(f"- `{char_key}` ({display_name})")
-        if available_chars_info:
-            await message.reply(
-                "利用可能なキャラクター:\n" + "\n".join(available_chars_info),
-                mention_author=False,
-            )
-        else:
-            await message.reply(
-                "利用可能なキャラクター設定ファイルが見つかりません。",
-                mention_author=False,
-            )
-        return
 
     image_contents = []
     if message.attachments:
