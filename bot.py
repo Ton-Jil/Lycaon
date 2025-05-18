@@ -8,8 +8,7 @@ import pytz
 from discord.ext import commands
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-
+from google.genai.types import GenerateContentConfig, GoogleSearch, Part, Tool
 
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -278,7 +277,7 @@ async def on_message(message):
 
                             # 画像データを Part オブジェクト形式に変換して追加
                             # Part.from_bytes を使うのが明示的で推奨
-                            image_part = types.Part.from_bytes(
+                            image_part = Part.from_bytes(
                                 data=image_data_bytes, mime_type=attachment.content_type
                             )
                             image_contents.append(image_part)
@@ -321,6 +320,10 @@ MODEL_NAME = "gemini-2.0-flash"
 HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
+google_search_tool = Tool(google_search=GoogleSearch())
+chat_config = GenerateContentConfig(
+    tools=[google_search_tool], response_modalities=["TEXT"]
+)
 
 
 DB_FILE = "chat_history.db"
@@ -626,6 +629,14 @@ active_character_display_name = (
 )
 
 
+def _create_chat_session(history: list):
+    """Helper function to create a new chat session."""
+    global shared_chat_session
+    shared_chat_session = client.chats.create(
+        model=MODEL_NAME, history=history, config=chat_config
+    )
+
+
 def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
@@ -659,9 +670,7 @@ def initialize_chat_session(character_key_to_load=None):
 
     # 4. 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
     final_history_for_session = initial_character_prompts + history_from_db
-    shared_chat_session = client.chats.create(
-        model=MODEL_NAME, history=final_history_for_session
-    )
+    _create_chat_session(history=final_history_for_session)
     set_setting_in_db(
         "current_character_key", character_key_to_load
     )  # 現在のキャラをDBに保存
@@ -750,9 +759,7 @@ async def handle_shared_discord_message(
                 pruned_history = initial_prompts_part + pruned_conversational_part
 
             # ChatSessionを新しい履歴で再生成
-            shared_chat_session = client.chats.create(
-                model=MODEL_NAME, history=pruned_history
-            )
+            _create_chat_session(history=pruned_history)
             print(
                 f"チャットセッションを新しい履歴 (計{len(pruned_history)}件) で再構築しました。"
             )
