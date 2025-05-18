@@ -4,10 +4,12 @@ import os
 import sqlite3
 
 import discord
-import google.generativeai as genai
 import pytz
 from discord.ext import commands
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+
 
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -276,10 +278,9 @@ async def on_message(message):
 
                             # 画像データを Part オブジェクト形式に変換して追加
                             # Part.from_bytes を使うのが明示的で推奨
-                            image_part = {
-                                "data": image_data_bytes,
-                                "mime_type": attachment.content_type,
-                            }
+                            image_part = types.Part.from_bytes(
+                                data=image_data_bytes, mime_type=attachment.content_type
+                            )
                             image_contents.append(image_part)
 
                         except Exception as e:
@@ -315,11 +316,11 @@ async def on_message(message):
 # --- グローバルなChatSession (メモリキャッシュとして) ---
 # スクリプトが再起動されると失われるため、ファイル保存と組み合わせる
 shared_chat_session = None
+initial_prompts_count = 0  # Tracks the number of initial prompts for history pruning
 MODEL_NAME = "gemini-2.0-flash"
 HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
-gemini_model = None  # モデルオブジェクトもグローバルに保持
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
 
 DB_FILE = "chat_history.db"
@@ -629,7 +630,7 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, gemini_model, active_character_key, active_character_display_name
+    global shared_chat_session, gemini_model, active_character_key, active_character_display_name, initial_prompts_count
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
@@ -637,6 +638,7 @@ def initialize_chat_session(character_key_to_load=None):
     initial_character_prompts, display_name = load_character_definition(
         character_key_to_load
     )
+    initial_prompts_count = len(initial_character_prompts)  # 初期プロンプトの数を保存
     active_character_key = character_key_to_load
     active_character_display_name = display_name  # グローバルな表示名を更新
 
@@ -652,15 +654,14 @@ def initialize_chat_session(character_key_to_load=None):
 
     create_table_if_not_exists()  # DBテーブル作成
 
-    if not gemini_model:
-        gemini_model = genai.GenerativeModel(MODEL_NAME)
-
     # DBから履歴を読み込み (例: 直近50ペア = 100メッセージ)
     history_from_db = load_history_from_db(limit=100)
 
     # 4. 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
     final_history_for_session = initial_character_prompts + history_from_db
-    shared_chat_session = gemini_model.start_chat(history=final_history_for_session)
+    shared_chat_session = client.chats.create(
+        model=MODEL_NAME, history=final_history_for_session
+    )
     set_setting_in_db(
         "current_character_key", character_key_to_load
     )  # 現在のキャラをDBに保存
@@ -705,24 +706,63 @@ async def handle_shared_discord_message(
     add_message_to_db(role="user", author_name=author_name, content=message_for_api)
 
     try:
-        MAX_HISTORY_LENGTH = (
-            200  # 例: 直近200件のやり取り（user+modelで1件と数えるなら100ペア）
-        )
-        if len(shared_chat_session.history) > MAX_HISTORY_LENGTH:
-            print(f"履歴が{MAX_HISTORY_LENGTH}件を超えたため、古いものから削除します。")
-            # 先頭から (MAX_HISTORY_LENGTH - 目的の履歴長) 分だけ削除
-            # 人格設定プロンプトを残したい場合は、それを考慮して削除件数や開始位置を調整
-            num_to_delete = len(shared_chat_session.history) - MAX_HISTORY_LENGTH
-            # 最初の2件(人格設定のuser/modelペア)を残す場合:
-            if len(shared_chat_session.history) > 2:  # 人格設定プロンプトがある前提
-                del shared_chat_session.history[2 : 2 + num_to_delete]
+        MAX_HISTORY_LENGTH = 200  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
+
+        # Chatオブジェクトから現在の履歴を取得 (curated=True でモデルに送信される履歴を取得)
+        current_history_list = shared_chat_session.get_history(curated=True)
+
+        if len(current_history_list) > MAX_HISTORY_LENGTH:
+            print(
+                f"現在の履歴長 ({len(current_history_list)}) が最大長 ({MAX_HISTORY_LENGTH}) を超えたため、履歴を整理します。"
+            )
+
+            pruned_history: list[types.Content]
+
+            if initial_prompts_count >= MAX_HISTORY_LENGTH:
+                # MAX_HISTORY_LENGTH が初期プロンプト数よりも小さいか等しい場合、
+                # 初期プロンプトの先頭 MAX_HISTORY_LENGTH 件のみを保持
+                pruned_history = current_history_list[:MAX_HISTORY_LENGTH]
+                print(
+                    f"警告: MAX_HISTORY_LENGTH ({MAX_HISTORY_LENGTH}) が初期プロンプト数 ({initial_prompts_count}) 以下です。履歴は初期プロンプトの先頭 {len(pruned_history)} 件に切り詰められます。"
+                )
+            else:
+                # 初期プロンプトは全て保持
+                initial_prompts_part = current_history_list[:initial_prompts_count]
+
+                # 会話部分の履歴を取得
+                conversational_part = current_history_list[initial_prompts_count:]
+
+                # 保持する会話メッセージの数を計算
+                num_conversational_to_keep = MAX_HISTORY_LENGTH - initial_prompts_count
+
+                if len(conversational_part) > num_conversational_to_keep:
+                    # 会話部分が長すぎる場合、末尾から指定件数だけ残す (古いものを削除)
+                    pruned_conversational_part = conversational_part[
+                        -num_conversational_to_keep:
+                    ]
+                    print(
+                        f"古い会話履歴から {len(conversational_part) - len(pruned_conversational_part)} 件を削除しました。初期プロンプト {initial_prompts_count} 件は保持されます。"
+                    )
+                else:
+                    # 会話部分が指定件数以下ならそのまま使用
+                    pruned_conversational_part = conversational_part
+
+                pruned_history = initial_prompts_part + pruned_conversational_part
+
+            # ChatSessionを新しい履歴で再生成
+            shared_chat_session = client.chats.create(
+                model=MODEL_NAME, history=pruned_history
+            )
+            print(
+                f"チャットセッションを新しい履歴 (計{len(pruned_history)}件) で再構築しました。"
+            )
 
         send_contents = [message_for_api]
         if image_contents:
             for image_part in image_contents:
                 send_contents.append(image_part)
         # APIに送信。メモリ上のshared_chat_session.historyも更新される
-        response = await shared_chat_session.send_message_async(send_contents)
+        response = shared_chat_session.send_message(send_contents)
         bot_response_text = response.text
 
         # ボットの応答をDBに保存
@@ -734,7 +774,6 @@ async def handle_shared_discord_message(
         return bot_response_text
 
     except Exception as e:
-        # エラー処理 (省略)
         print(f"Error during message handling: {e}")
         return "エラーが発生しました。"
 
