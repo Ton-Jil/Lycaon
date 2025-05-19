@@ -20,6 +20,8 @@ TARGET_CHANNEL_IDS = {
     if cid.strip().isdigit()
 }
 
+MAX_DISCORD_MESSAGE_LENGTH = 2000  # Discord's message character limit
+
 intents = discord.Intents.default()
 intents.messages = True  # メッセージ関連のイベントを処理するために必要
 intents.message_content = True  # メッセージ内容を読み取るために必要
@@ -308,8 +310,31 @@ async def on_message(message):
             bot_reply = await handle_shared_discord_message(
                 author_name, user_input, image_contents
             )
-        # 返信で応答
-        await message.reply(bot_reply, mention_author=False)
+
+        if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
+            if len(bot_reply) <= MAX_DISCORD_MESSAGE_LENGTH:
+                await message.reply(bot_reply, mention_author=False)
+            else:
+                # Split the message into chunks
+                parts = []
+                for i in range(0, len(bot_reply), MAX_DISCORD_MESSAGE_LENGTH):
+                    parts.append(bot_reply[i : i + MAX_DISCORD_MESSAGE_LENGTH])
+
+                first_message_sent = False
+                for part_content in parts:
+                    if (
+                        part_content.strip()
+                    ):  # Don't send empty or whitespace-only messages
+                        if not first_message_sent:
+                            await message.reply(part_content, mention_author=False)
+                            first_message_sent = True
+                        else:
+                            # Send subsequent parts as new messages in the channel
+                            await message.channel.send(part_content)
+        else:
+            print(
+                f"Warning: Bot generated an empty or whitespace-only reply for user input: '{user_input}'"
+            )
 
 
 # --- グローバルなChatSession (メモリキャッシュとして) ---
