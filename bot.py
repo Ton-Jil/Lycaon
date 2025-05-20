@@ -9,6 +9,13 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import GenerateContentConfig, GoogleSearch, Part, Tool
+from google.genai.errors import ServerError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -495,6 +502,10 @@ def load_character_definition(main_character_key, processed_relations=None):
     )  # メインキャラの基本指示
     system_instruction_user += "ユーザーの発言には改行区切りで発言時間、ユーザー名、発言内容が付与されています。\n発言の例\n時間\nユーザーA\nこんにちは\n\n応答の際には、誰のどの発言に対して応答しているのかを意識して、応答内容に含めるときはこの付与されたユーザー名を取り除いてから応答してください。また、会話の時間も意識してください。また、ユーザーの入力した発言時間、ユーザー名の内容を回答の最初に入れることは絶対に避けてください。ユーザーの発言内容を理解した上で、必ずあなた自身の言葉で応答してください。ユーザーの話し方に安易に影響されないようにしてください。同じ文字やフレーズの極端な繰り返しを避け、簡潔で多様な表現を心がけてください。不自然に長い同じ文字の羅列は避けてください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
     system_instruction_user += main_char_data.get("character_metadata", "")
+    # example_dialogues は system_instruction ではなく、会話履歴の例として final_initial_prompts に追加します。
+    example_dialogues_list = main_char_data.get(
+        "example_dialogues", []
+    )  # JSON側のキー名に合わせる
     initial_model_response = main_char_data.get("initial_model_response", "")
     conversation_examples_list = main_char_data.get("conversation_examples", [])
 
@@ -546,6 +557,17 @@ def load_character_definition(main_character_key, processed_relations=None):
         {"role": "user", "parts": [{"text": system_instruction_user}]},
         {"role": "model", "parts": [{"text": initial_model_response}]},
     ]
+
+    # Add example dialogues from the new field, paired with generic user turns
+    for dialogue_string in example_dialogues_list:
+        # Add a generic user turn before each example model dialogue to maintain history structure
+        final_initial_prompts.append(
+            {"role": "user", "parts": [{"text": "..."}]}
+        )  # Using "..." as a placeholder
+        final_initial_prompts.append(
+            {"role": "model", "parts": [{"text": dialogue_string}]}
+        )
+
     for example_message in conversation_examples_list:
         # 各要素がChatSessionのhistoryとして有効な構造か、簡単な検証を行うとより安全
         if (
@@ -718,6 +740,34 @@ def get_current_time_japan():
     return now_tokyo.strftime(
         "%Y年%m月%d日 (%A) %H時%M分%S秒 JST"
     )  # 例: 2025年05月17日 (金曜日) 22時12分30秒 JST
+
+
+# Gemini API呼び出しにリトライを適用するヘルパー関数
+@retry(
+    stop=stop_after_attempt(5),  # 最大5回試行 (初回 + 4回リトライ)
+    wait=wait_exponential(
+        multiplier=1, min=4, max=30
+    ),  # 最小4秒、その後8秒、16秒と指数関数的に増加し、最大30秒まで待機
+    retry=retry_if_exception_type(ServerError),
+)
+def _send_message_with_retry(chat_session, contents):
+    """
+    Gemini ChatSessionのsend_messageをリトライ付きで実行するヘルパー関数。
+    """
+    # print("Gemini APIにメッセージを送信中...")
+    try:
+        response = chat_session.send_message(contents)
+        # print("Gemini APIからの応答を受信しました。")
+        return response
+    except ServerError as e:
+        print(
+            f"Gemini APIでServiceUnavailableエラーが発生しました。リトライします: {e}"
+        )
+        raise  # tenacityがこの例外を捕捉してリトライを処理します
+    except Exception as e:
+        print(f"Gemini API呼び出し中に予期せぬエラーが発生しました: {e}")
+        raise  # その他のエラーはリトライせずそのまま送出
+
     # より簡潔な形式でも良い: "%Y/%m/%d %H:%M"
 
 
@@ -797,7 +847,7 @@ async def handle_shared_discord_message(
             for image_part in image_contents:
                 send_contents.append(image_part)
         # APIに送信。メモリ上のshared_chat_session.historyも更新される
-        response = shared_chat_session.send_message(send_contents)
+        response = _send_message_with_retry(shared_chat_session, send_contents)
         bot_response_text = response.text
 
         # ボットの応答をDBに保存
