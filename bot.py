@@ -9,6 +9,13 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import GenerateContentConfig, GoogleSearch, Part, Tool
+from google.genai.errors import ServerError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -575,7 +582,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             )
             # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
+    # print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
@@ -733,6 +740,34 @@ def get_current_time_japan():
     return now_tokyo.strftime(
         "%Y年%m月%d日 (%A) %H時%M分%S秒 JST"
     )  # 例: 2025年05月17日 (金曜日) 22時12分30秒 JST
+
+
+# Gemini API呼び出しにリトライを適用するヘルパー関数
+@retry(
+    stop=stop_after_attempt(5),  # 最大5回試行 (初回 + 4回リトライ)
+    wait=wait_exponential(
+        multiplier=1, min=4, max=30
+    ),  # 最小4秒、その後8秒、16秒と指数関数的に増加し、最大30秒まで待機
+    retry=retry_if_exception_type(ServerError),
+)
+def _send_message_with_retry(chat_session, contents):
+    """
+    Gemini ChatSessionのsend_messageをリトライ付きで実行するヘルパー関数。
+    """
+    # print("Gemini APIにメッセージを送信中...")
+    try:
+        response = chat_session.send_message(contents)
+        # print("Gemini APIからの応答を受信しました。")
+        return response
+    except ServerError as e:
+        print(
+            f"Gemini APIでServiceUnavailableエラーが発生しました。リトライします: {e}"
+        )
+        raise  # tenacityがこの例外を捕捉してリトライを処理します
+    except Exception as e:
+        print(f"Gemini API呼び出し中に予期せぬエラーが発生しました: {e}")
+        raise  # その他のエラーはリトライせずそのまま送出
+
     # より簡潔な形式でも良い: "%Y/%m/%d %H:%M"
 
 
@@ -812,7 +847,7 @@ async def handle_shared_discord_message(
             for image_part in image_contents:
                 send_contents.append(image_part)
         # APIに送信。メモリ上のshared_chat_session.historyも更新される
-        response = shared_chat_session.send_message(send_contents)
+        response = _send_message_with_retry(shared_chat_session, send_contents)
         bot_response_text = response.text
 
         # ボットの応答をDBに保存
