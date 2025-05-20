@@ -495,6 +495,10 @@ def load_character_definition(main_character_key, processed_relations=None):
     )  # メインキャラの基本指示
     system_instruction_user += "ユーザーの発言には改行区切りで発言時間、ユーザー名、発言内容が付与されています。\n発言の例\n時間\nユーザーA\nこんにちは\n\n応答の際には、誰のどの発言に対して応答しているのかを意識して、応答内容に含めるときはこの付与されたユーザー名を取り除いてから応答してください。また、会話の時間も意識してください。また、ユーザーの入力した発言時間、ユーザー名の内容を回答の最初に入れることは絶対に避けてください。ユーザーの発言内容を理解した上で、必ずあなた自身の言葉で応答してください。ユーザーの話し方に安易に影響されないようにしてください。同じ文字やフレーズの極端な繰り返しを避け、簡潔で多様な表現を心がけてください。不自然に長い同じ文字の羅列は避けてください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
     system_instruction_user += main_char_data.get("character_metadata", "")
+    # example_dialogues は system_instruction ではなく、会話履歴の例として final_initial_prompts に追加します。
+    example_dialogues_list = main_char_data.get(
+        "example_dialogues", []
+    )  # JSON側のキー名に合わせる
     initial_model_response = main_char_data.get("initial_model_response", "")
     conversation_examples_list = main_char_data.get("conversation_examples", [])
 
@@ -546,6 +550,17 @@ def load_character_definition(main_character_key, processed_relations=None):
         {"role": "user", "parts": [{"text": system_instruction_user}]},
         {"role": "model", "parts": [{"text": initial_model_response}]},
     ]
+
+    # Add example dialogues from the new field, paired with generic user turns
+    for dialogue_string in example_dialogues_list:
+        # Add a generic user turn before each example model dialogue to maintain history structure
+        final_initial_prompts.append(
+            {"role": "user", "parts": [{"text": "..."}]}
+        )  # Using "..." as a placeholder
+        final_initial_prompts.append(
+            {"role": "model", "parts": [{"text": dialogue_string}]}
+        )
+
     for example_message in conversation_examples_list:
         # 各要素がChatSessionのhistoryとして有効な構造か、簡単な検証を行うとより安全
         if (
@@ -560,7 +575,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             )
             # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    # print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
+    print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
