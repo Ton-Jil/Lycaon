@@ -319,25 +319,7 @@ async def on_message(message):
             )
 
         if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
-            if len(bot_reply) <= MAX_DISCORD_MESSAGE_LENGTH:
-                await message.reply(bot_reply, mention_author=False)
-            else:
-                # Split the message into chunks
-                parts = []
-                for i in range(0, len(bot_reply), MAX_DISCORD_MESSAGE_LENGTH):
-                    parts.append(bot_reply[i : i + MAX_DISCORD_MESSAGE_LENGTH])
-
-                first_message_sent = False
-                for part_content in parts:
-                    if (
-                        part_content.strip()
-                    ):  # Don't send empty or whitespace-only messages
-                        if not first_message_sent:
-                            await message.reply(part_content, mention_author=False)
-                            first_message_sent = True
-                        else:
-                            # Send subsequent parts as new messages in the channel
-                            await message.channel.send(part_content)
+            await message.reply(bot_reply, mention_author=False)
         else:
             print(
                 f"Warning: Bot generated an empty or whitespace-only reply for user input: '{user_input}'"
@@ -778,6 +760,8 @@ async def handle_shared_discord_message(
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
     """
     global shared_chat_session
+    global initial_prompts_count
+
     if not shared_chat_session:
         # ボット起動時に初期化されているはずだが、念のため
         print("エラー: チャットセッションが初期化されていません。")
@@ -786,11 +770,15 @@ async def handle_shared_discord_message(
             return "申し訳ありません、ボットのチャット機能が正しく起動していません。管理者にご連絡ください。"
 
     current_time_str = get_current_time_japan()
-    message_for_api = f"{current_time_str}\n{author_name}\n{user_message_content}"
+    original_message_for_api = (
+        f"{current_time_str}\n{author_name}\n{user_message_content}"
+    )
     print(
         f"{author_name}: {user_message_content}"
     )  # Discord側にエコーバックされるので必須ではない
-    add_message_to_db(role="user", author_name=author_name, content=message_for_api)
+    add_message_to_db(
+        role="user", author_name=author_name, content=original_message_for_api
+    )
 
     try:
         MAX_HISTORY_LENGTH = 200  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
@@ -842,25 +830,85 @@ async def handle_shared_discord_message(
                 f"チャットセッションを新しい履歴 (計{len(pruned_history)}件) で再構築しました。"
             )
 
-        send_contents = [message_for_api]
-        if image_contents:
-            for image_part in image_contents:
-                send_contents.append(image_part)
-        # APIに送信。メモリ上のshared_chat_session.historyも更新される
-        response = _send_message_with_retry(shared_chat_session, send_contents)
-        bot_response_text = response.text
-
-        # ボットの応答をDBに保存
-        # ボットの応答にも人格設定で名前が付与されている前提
-        add_message_to_db(role="model", author_name="bot", content=bot_response_text)
-
-        # save_shared_chat_history() は呼び出さない
-        print(bot_response_text)
-        return bot_response_text
-
     except Exception as e:
-        print(f"Error during message handling: {e}")
-        return "エラーが発生しました。"
+        print(f"履歴の整理中にエラーが発生しました: {e}")
+        # 致命的ではないかもしれないので、処理を続行する。エラーメッセージを返すことも検討。
+
+    # --- Gemini APIへの送信と応答長チェック ---
+    first_api_call_contents = [original_message_for_api]
+    if image_contents:
+        for image_part in image_contents:
+            first_api_call_contents.append(image_part)
+
+    MAX_ATTEMPTS_FOR_LENGTH = 3  # 初回試行 + 2回の短縮試行
+    bot_response_text = ""
+
+    for attempt in range(MAX_ATTEMPTS_FOR_LENGTH):
+        current_api_call_input_parts: list
+
+        if attempt == 0:
+            current_api_call_input_parts = first_api_call_contents
+        else:
+            # 応答が長すぎたため再試行
+            shortening_prompt_text = "あなたの直前の応答はDiscordの文字数制限(2000文字)を超過しました。内容を維持しつつ、2000文字以内で簡潔に言い直してください。"
+            print(
+                f"応答短縮を要求します (試行 {attempt + 1}/{MAX_ATTEMPTS_FOR_LENGTH}): {shortening_prompt_text}"
+            )
+            current_api_call_input_parts = [shortening_prompt_text]
+
+        try:
+            # APIに送信。shared_chat_session.historyはこの呼び出しによって更新される
+            # (入力内容が'user'として、応答内容が'model'として追加される)
+            response = _send_message_with_retry(
+                shared_chat_session, current_api_call_input_parts
+            )
+            bot_response_text = response.text
+
+            if len(bot_response_text) <= MAX_DISCORD_MESSAGE_LENGTH:
+                # 応答が適切な長さであれば、DBに保存して返す
+                add_message_to_db(
+                    role="model", author_name="bot", content=bot_response_text
+                )
+                print(
+                    f"Geminiからの応答（試行 {attempt + 1}）: {bot_response_text[:200]}..."
+                )  # ログには一部表示
+                return bot_response_text
+            else:
+                # 応答が長すぎる場合
+                print(
+                    f"Geminiの応答が長すぎます ({len(bot_response_text)}文字)。試行 {attempt + 1}/{MAX_ATTEMPTS_FOR_LENGTH}。"
+                )
+                # 長すぎた応答はDBには保存しない。ループが継続すれば短縮が試みられる。
+                if attempt == MAX_ATTEMPTS_FOR_LENGTH - 1:
+                    # これが最後の試行でも長すぎた場合
+                    break  # ループを抜けて最終処理へ
+
+        except ServerError as e:  # _send_message_with_retry がリトライを諦めた場合
+            print(
+                f"Gemini APIでサーバーエラーが発生しました（試行 {attempt + 1}）：{e}"
+            )
+            if attempt == MAX_ATTEMPTS_FOR_LENGTH - 1:  # 最後の試行でのエラー
+                return "Gemini APIでエラーが繰り返し発生しました。しばらくしてからもう一度お試しください。"
+            # ループは継続し、次の試行で再度API呼び出しが行われる（べきだが、ここではエラーとして終了させる方が安全か）
+            # ServerErrorがここまで来たということは、_send_message_with_retry内のリトライが尽きたということ。
+            return "Gemini APIとの通信中にエラーが発生しました。"  # ここで終了させる
+        except Exception as e:  # その他の予期せぬエラー
+            print(
+                f"メッセージ処理中に予期せぬエラーが発生しました（試行 {attempt + 1}）：{e}"
+            )
+            return "メッセージの処理中に予期せぬエラーが発生しました。"
+
+    # ループが完了しても適切な長さの応答が得られなかった場合
+    if len(bot_response_text) > MAX_DISCORD_MESSAGE_LENGTH:
+        print(
+            f"Geminiの応答は、{MAX_ATTEMPTS_FOR_LENGTH}回の試行後も長すぎます。最終応答長: {len(bot_response_text)}"
+        )
+        # この長すぎた最終応答はDBには保存しない。セッション履歴には残っている。
+        return "エラー、回答できませんでした。"
+
+    # 通常ここには到達しないはずだが、万が一のためのフォールバック
+    print("予期せぬ状態で応答生成が終了しました。")
+    return "予期せぬエラーにより応答を生成できませんでした。"
 
 
 bot.run(TOKEN)
