@@ -113,7 +113,6 @@ async def resetchat_error(ctx, error):
 
 
 @bot.command(name="setchar")
-@commands.has_permissions(administrator=True)  # 例: 管理者のみ変更可能
 async def setchar_command(ctx, char_key: str):
     """
     ボットのキャラクターを変更します（管理者限定）。
