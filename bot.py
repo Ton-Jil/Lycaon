@@ -504,7 +504,7 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user += main_char_data.get("character_metadata", "")
     # example_dialogues は system_instruction ではなく、会話履歴の例として final_initial_prompts に追加します。
     example_dialogues_list = main_char_data.get(
-        "example_dialogues", []
+        "dialogue_examples", []
     )  # JSON側のキー名に合わせる
     initial_model_response = main_char_data.get("initial_model_response", "")
     conversation_examples_list = main_char_data.get("conversation_examples", [])
@@ -582,7 +582,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             )
             # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    # print(f"最終システムプロンプト:\n{system_instruction_user}")  # デバッグ用
+    # print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
