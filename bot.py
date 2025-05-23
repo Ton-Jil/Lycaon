@@ -254,7 +254,7 @@ async def check_auto_speak():
 
 @bot.command("talktome")
 async def talktome_command(ctx):
-    user = ctx.author
+    user = ctx.author.display_name
     talk_prompt = f"{user}との過去の会話を踏まえて、{user}との会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。ユーザーからの返答がなかった話題からは変えるようにしてください。"
     async with ctx.channel.typing():
         response = _send_message_with_retry(shared_chat_session, [talk_prompt])
