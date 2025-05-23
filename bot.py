@@ -239,7 +239,7 @@ async def check_auto_speak():
         if not channel:
             continue
         if (current_time - last_activity_time).seconds > 60:
-            auto_speak_prompt_text = "過去の会話を踏まえて、ユーザーとの会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。ユーザーからの返答がなかった話題からは変えるようにしてください。"
+            auto_speak_prompt_text = "過去の会話を踏まえて、ユーザーとの会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。過去に自分が提案したことがある話題の繰り返しは避けるようにしてください。話題がない場合はキャラクター情報から会話のきっかけを考えてください。"
             async with channel.typing():
                 response = _send_message_with_retry(
                     shared_chat_session, [auto_speak_prompt_text]
@@ -255,7 +255,7 @@ async def check_auto_speak():
 @bot.command("talktome")
 async def talktome_command(ctx):
     user = ctx.author.display_name
-    talk_prompt = f"{user}との過去の会話を踏まえて、{user}との会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。ユーザーからの返答がなかった話題からは変えるようにしてください。"
+    talk_prompt = f"{user}との過去の会話を踏まえて、{user}との会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。過去に自分が提案したことがある話題の繰り返しは避けるようにしてください。話題がない場合はキャラクター情報から会話のきっかけを考えてください。"
     async with ctx.channel.typing():
         response = _send_message_with_retry(shared_chat_session, [talk_prompt])
         bot_reply = response.text
