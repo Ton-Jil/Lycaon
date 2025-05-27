@@ -598,22 +598,22 @@ def load_character_definition(main_character_key, processed_relations=None):
         # メインプロンプト内で関係性を記述してもらうことを促す一文は、
         # メインの system_instruction_user 自体に含めてもらう方が自然かもしれません。
         # 例: 「あなたは以下の人物たちのことも知っています。彼らとの関係性はあなたの設定に基づきます。」
-        # system_instruction_user += "\n上記はあなたが知っている人物のリストです。彼らとの具体的な関係性やあなたの考えは、あなたの基本設定に基づいて判断してください。"
+
+    # example_dialogues_list を system_instruction_user に含める
+    if example_dialogues_list:
+        system_instruction_user += (
+            "\n\n--- 発言例、以下の発現例に言葉遣いを可能な限り寄せてください ---"
+        )
+        for dialogue_string in example_dialogues_list:
+            # 会話例を整形して追加（ここでは単純に文字列として追加）
+            # 必要に応じて、ユーザーとモデルのターンを区別するような書式にしても良い
+            system_instruction_user += f"\n{dialogue_string}"
+        system_instruction_user += "\n--- 発言例ここまで ---"
 
     final_initial_prompts = [
         {"role": "user", "parts": [{"text": system_instruction_user}]},
         {"role": "model", "parts": [{"text": initial_model_response}]},
     ]
-
-    # Add example dialogues from the new field, paired with generic user turns
-    for dialogue_string in example_dialogues_list:
-        # Add a generic user turn before each example model dialogue to maintain history structure
-        final_initial_prompts.append(
-            {"role": "user", "parts": [{"text": "..."}]}
-        )  # Using "..." as a placeholder
-        final_initial_prompts.append(
-            {"role": "model", "parts": [{"text": dialogue_string}]}
-        )
 
     for example_message in conversation_examples_list:
         # 各要素がChatSessionのhistoryとして有効な構造か、簡単な検証を行うとより安全
@@ -629,7 +629,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             )
             # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    # print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
+    print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
