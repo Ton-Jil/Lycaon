@@ -629,7 +629,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             )
             # 不正な要素はスキップ
     # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
+    # print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
     return final_initial_prompts, display_name
 
 
