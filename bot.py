@@ -763,7 +763,7 @@ def initialize_chat_session(character_key_to_load=None):
     create_table_if_not_exists()  # DBテーブル作成
 
     # DBから履歴を読み込み (例: 直近50ペア = 100メッセージ)
-    history_from_db = load_history_from_db(limit=100)
+    history_from_db = load_history_from_db(limit=50)
 
     # 4. 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
     final_history_for_session = initial_character_prompts + history_from_db
@@ -846,7 +846,7 @@ async def handle_shared_discord_message(
     )
 
     try:
-        MAX_HISTORY_LENGTH = 200  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
+        MAX_HISTORY_LENGTH = 100  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
 
         # Chatオブジェクトから現在の履歴を取得 (curated=True でモデルに送信される履歴を取得)
         current_history_list = shared_chat_session.get_history(curated=True)
@@ -871,21 +871,32 @@ async def handle_shared_discord_message(
 
                 # 会話部分の履歴を取得
                 conversational_part = current_history_list[initial_prompts_count:]
+                original_conversational_length = len(conversational_part)
 
-                # 保持する会話メッセージの数を計算
-                num_conversational_to_keep = MAX_HISTORY_LENGTH - initial_prompts_count
+                # 保持する会話メッセージの目標数を計算します。
+                # 許容される会話履歴の最大長 (MAX_HISTORY_LENGTH - initial_prompts_count) の
+                # おおよそ半分に削減することで、頻繁な履歴整理を防ぎます。
+                allowed_total_conversational_length = (
+                    MAX_HISTORY_LENGTH - initial_prompts_count
+                )
 
-                if len(conversational_part) > num_conversational_to_keep:
-                    # 会話部分が長すぎる場合、末尾から指定件数だけ残す (古いものを削除)
-                    pruned_conversational_part = conversational_part[
-                        -num_conversational_to_keep:
-                    ]
-                    print(
-                        f"古い会話履歴から {len(conversational_part) - len(pruned_conversational_part)} 件を削除しました。初期プロンプト {initial_prompts_count} 件は保持されます。"
-                    )
-                else:
-                    # 会話部分が指定件数以下ならそのまま使用
-                    pruned_conversational_part = conversational_part
+                # 新しい目標の会話履歴の長さ。最低0件。
+                # 例えば、許容会話長が10なら、5件に、1なら0件に（古い1件を削除）
+                num_conversational_to_retain = max(
+                    0, allowed_total_conversational_length // 2
+                )
+
+                # 会話部分の末尾から指定件数だけを残します (古いものを削除)
+                # この時点で len(conversational_part) は allowed_total_conversational_length を超えているため、
+                # num_conversational_to_retain より確実に長いです (num_conversational_to_retain が0でない限り)。
+                pruned_conversational_part = conversational_part[
+                    -num_conversational_to_retain:
+                ]
+
+                print(
+                    f"会話履歴を整理しました。初期プロンプト {initial_prompts_count} 件は保持されます。"
+                    f"会話部分は元の {original_conversational_length} 件から最新の {len(pruned_conversational_part)} 件に削減されました。"
+                )
 
                 pruned_history = initial_prompts_part + pruned_conversational_part
 
