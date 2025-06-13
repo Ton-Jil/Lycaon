@@ -8,7 +8,13 @@ import pytz
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from google import genai
-from google.genai.types import GenerateContentConfig, GoogleSearch, Part, Tool
+from google.genai.types import (
+    GenerateContentConfig,
+    GoogleSearch,
+    Part,
+    Tool,
+    CreateCachedContentConfig,
+)
 from google.genai.errors import ServerError
 from tenacity import (
     retry,
@@ -108,6 +114,31 @@ async def resetchat(ctx):
 
 @resetchat.error
 async def resetchat_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("このコマンドを実行する権限がありません。", mention_author=False)
+    else:
+        # その他のエラーはコンソールに出力するなど
+        print(f"コマンドエラー: {error}")
+        await ctx.send("コマンド実行中にエラーが発生しました。", mention_author=False)
+
+
+@bot.command(name="resetcache")
+@commands.has_permissions(administrator=True)  # 管理者権限が必要な場合
+async def resetcache(ctx):
+    """
+    全キャッシュをリセットします（管理者限定）。
+    """
+    global active_character_key
+
+    for cache in client.caches.list():
+        client.caches.delete(name=cache.name)
+
+    initialize_chat_session(active_character_key)
+    await ctx.send("全キャッシュをリセットしました。", mention_author=False)
+
+
+@resetcache.error
+async def resetcache_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("このコマンドを実行する権限がありません。", mention_author=False)
     else:
@@ -394,18 +425,14 @@ async def on_message(message):
 # --- グローバルなChatSession (メモリキャッシュとして) ---
 # スクリプトが再起動されると失われるため、ファイル保存と組み合わせる
 shared_chat_session = None
-initial_prompts_count = 0  # Tracks the number of initial prompts for history pruning
-MODEL_NAME = "gemini-2.0-flash"
+initial_conversation_history_count = (
+    0  # Tracks the number of initial prompts for history pruning
+)
+MODEL_NAME = "gemini-2.0-flash-001"
 HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 google_search_tool = Tool(google_search=GoogleSearch())
-chat_config = GenerateContentConfig(
-    tools=[google_search_tool],
-    response_modalities=["TEXT"],
-    frequency_penalty=1.0,
-    temperature=0.3,
-)
 
 
 DB_FILE = "chat_history.db"
@@ -535,13 +562,13 @@ def load_character_definition(main_character_key, processed_relations=None):
         processed_relations = set()
 
     if main_character_key in processed_relations:
-        return [], main_character_key
+        return "", [], main_character_key
 
     processed_relations.add(main_character_key)
 
     main_char_data = _load_raw_character_data(main_character_key)
     if not main_char_data:
-        return [], main_character_key
+        return "", [], main_character_key
 
     display_name = main_char_data.get("character_name_display", main_character_key)
     system_instruction_user = main_char_data.get(
@@ -610,13 +637,9 @@ def load_character_definition(main_character_key, processed_relations=None):
             system_instruction_user += f"\n{dialogue_string}"
         system_instruction_user += "\n--- 発言例ここまで ---"
 
-    final_initial_prompts = [
-        {"role": "user", "parts": [{"text": system_instruction_user}]},
-        {"role": "model", "parts": [{"text": initial_model_response}]},
-    ]
+    final_initial_prompts = []
 
     for example_message in conversation_examples_list:
-        # 各要素がChatSessionのhistoryとして有効な構造か、簡単な検証を行うとより安全
         if (
             isinstance(example_message, dict)
             and example_message.get("role") in ["user", "model"]
@@ -627,10 +650,7 @@ def load_character_definition(main_character_key, processed_relations=None):
             print(
                 f"警告: キャラクター「{display_name}」の conversation_examples 内の要素の構造が不正です: {example_message}"
             )
-            # 不正な要素はスキップ
-    # print(f"キャラクター「{display_name}」（関連人物の参考情報含む）のプロンプトを構築しました。")
-    # print(f"最終システムプロンプト:\n{final_initial_prompts}")  # デバッグ用
-    return final_initial_prompts, display_name
+    return system_instruction_user, final_initial_prompts, display_name
 
 
 def get_setting_from_db(key, default_value=None):
@@ -726,9 +746,15 @@ active_character_display_name = (
 )
 
 
-def _create_chat_session(history: list):
+def _create_chat_session(cache_name: str, history: list):
     """Helper function to create a new chat session."""
     global shared_chat_session
+    chat_config = GenerateContentConfig(
+        response_modalities=["TEXT"],
+        frequency_penalty=1.0,
+        temperature=0.3,
+        cached_content=cache_name,
+    )
     shared_chat_session = client.chats.create(
         model=MODEL_NAME, history=history, config=chat_config
     )
@@ -738,27 +764,46 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, gemini_model, active_character_key, active_character_display_name, initial_prompts_count
+    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
 
-    initial_character_prompts, display_name = load_character_definition(
-        character_key_to_load
+    system_instruction_text, initial_conversation_history, display_name = (
+        load_character_definition(character_key_to_load)
     )
-    initial_prompts_count = len(initial_character_prompts)  # 初期プロンプトの数を保存
     active_character_key = character_key_to_load
     active_character_display_name = display_name  # グローバルな表示名を更新
 
-    if not initial_character_prompts:
+    if not system_instruction_text:
         print(
             f"警告: キャラクター「{character_key_to_load}」のプロンプトでセッションを開始できません。"
         )
-        # 適切なフォールバック処理 (例: エラーを返す、非常にシンプルなデフォルトプロンプトを使うなど)
-        # shared_chat_session = None # またはエラー状態を示す
-        # return
-        # ここでは、最も基本的なプロンプトなしセッションで開始する例（実際にはエラー処理した方が良い）
-        initial_character_prompts = []
+        shared_chat_session = None
+        return
+
+    # cacheの作成
+    safe_model_name_for_cache = MODEL_NAME.replace("/", "-")
+    cache_name = f"{character_key_to_load}-{safe_model_name_for_cache}-system-prompt"
+    system_cache = None
+    for cache in client.caches.list():
+        if cache.display_name == cache_name:
+            system_cache = cache
+
+    if system_cache is None:
+        print(f"CachedContent が見つからないため新規作成: {cache_name}")
+        try:
+            system_cache = client.caches.create(
+                model=MODEL_NAME,
+                config=CreateCachedContentConfig(
+                    display_name=cache_name,
+                    system_instruction=system_instruction_text,
+                    ttl="3600s",
+                ),
+            )
+            print(f"CachedContent を作成しました: {system_cache.name}")
+        except Exception as e:
+            print(f"CachedContent の作成中にエラーが発生しました: {e}")
 
     create_table_if_not_exists()  # DBテーブル作成
 
@@ -766,8 +811,11 @@ def initialize_chat_session(character_key_to_load=None):
     history_from_db = load_history_from_db(limit=50)
 
     # 4. 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
-    final_history_for_session = initial_character_prompts + history_from_db
-    _create_chat_session(history=final_history_for_session)
+    final_history_for_session = initial_conversation_history + history_from_db
+    _create_chat_session(
+        cache_name=system_cache.name, history=final_history_for_session
+    )
+    initial_conversation_history_count = len(initial_conversation_history)
     set_setting_in_db(
         "current_character_key", character_key_to_load
     )  # 現在のキャラをDBに保存
@@ -824,8 +872,7 @@ async def handle_shared_discord_message(
     """
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
     """
-    global shared_chat_session
-    global initial_prompts_count
+    global shared_chat_session, active_character_key
 
     if not shared_chat_session:
         # ボット起動時に初期化されているはずだが、念のため
@@ -856,55 +903,7 @@ async def handle_shared_discord_message(
                 f"現在の履歴長 ({len(current_history_list)}) が最大長 ({MAX_HISTORY_LENGTH}) を超えたため、履歴を整理します。"
             )
 
-            pruned_history: list
-
-            if initial_prompts_count >= MAX_HISTORY_LENGTH:
-                # MAX_HISTORY_LENGTH が初期プロンプト数よりも小さいか等しい場合、
-                # 初期プロンプトの先頭 MAX_HISTORY_LENGTH 件のみを保持
-                pruned_history = current_history_list[:MAX_HISTORY_LENGTH]
-                print(
-                    f"警告: MAX_HISTORY_LENGTH ({MAX_HISTORY_LENGTH}) が初期プロンプト数 ({initial_prompts_count}) 以下です。履歴は初期プロンプトの先頭 {len(pruned_history)} 件に切り詰められます。"
-                )
-            else:
-                # 初期プロンプトは全て保持
-                initial_prompts_part = current_history_list[:initial_prompts_count]
-
-                # 会話部分の履歴を取得
-                conversational_part = current_history_list[initial_prompts_count:]
-                original_conversational_length = len(conversational_part)
-
-                # 保持する会話メッセージの目標数を計算します。
-                # 許容される会話履歴の最大長 (MAX_HISTORY_LENGTH - initial_prompts_count) の
-                # おおよそ半分に削減することで、頻繁な履歴整理を防ぎます。
-                allowed_total_conversational_length = (
-                    MAX_HISTORY_LENGTH - initial_prompts_count
-                )
-
-                # 新しい目標の会話履歴の長さ。最低0件。
-                # 例えば、許容会話長が10なら、5件に、1なら0件に（古い1件を削除）
-                num_conversational_to_retain = max(
-                    0, allowed_total_conversational_length // 2
-                )
-
-                # 会話部分の末尾から指定件数だけを残します (古いものを削除)
-                # この時点で len(conversational_part) は allowed_total_conversational_length を超えているため、
-                # num_conversational_to_retain より確実に長いです (num_conversational_to_retain が0でない限り)。
-                pruned_conversational_part = conversational_part[
-                    -num_conversational_to_retain:
-                ]
-
-                print(
-                    f"会話履歴を整理しました。初期プロンプト {initial_prompts_count} 件は保持されます。"
-                    f"会話部分は元の {original_conversational_length} 件から最新の {len(pruned_conversational_part)} 件に削減されました。"
-                )
-
-                pruned_history = initial_prompts_part + pruned_conversational_part
-
-            # ChatSessionを新しい履歴で再生成
-            _create_chat_session(history=pruned_history)
-            print(
-                f"チャットセッションを新しい履歴 (計{len(pruned_history)}件) で再構築しました。"
-            )
+            initialize_chat_session(active_character_key)
 
     except Exception as e:
         print(f"履歴の整理中にエラーが発生しました: {e}")
