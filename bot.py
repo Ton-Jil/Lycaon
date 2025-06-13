@@ -799,6 +799,7 @@ def initialize_chat_session(character_key_to_load=None):
                     display_name=cache_name,
                     system_instruction=system_instruction_text,
                     ttl="3600s",
+                    tools=[google_search_tool],
                 ),
             )
             print(f"CachedContent を作成しました: {system_cache.name}")
