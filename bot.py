@@ -280,6 +280,7 @@ async def check_auto_speak():
             if bot_reply and bot_reply.strip():
                 await channel.send(bot_reply)
                 auto_speak_channels[channel_id] = current_time
+                add_message_to_db("user", "system", auto_speak_prompt_text)
                 add_message_to_db("model", "bot", bot_reply)
 
 
@@ -293,6 +294,7 @@ async def talktome_command(ctx):
 
     if bot_reply and bot_reply.strip():
         await ctx.reply(bot_reply, mention_author=False)
+        add_message_to_db("user", "system", talk_prompt)
         add_message_to_db("model", "bot", bot_reply)
 
 
@@ -690,12 +692,15 @@ def load_history_from_db(limit=100):  # 例: 直近100件のやり取りを読�
 
     table_name = get_history_table_name(active_character_key)
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    # timestampの降順で最新N件を取得し、それをさらに昇順に並べ替える
-    # (SQLiteではサブクエリやウィンドウ関数が使えるが、シンプルに全件取得してPython側でハンドリングも可)
-    # ここではシンプルに最新N件のメッセージを取得（userとmodelそれぞれを1件と数える）
+    conn = None
+    raw_rows_from_db = []  # DBから直接読み込んだ行データ
+
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # timestampの降順で最新N件を取得し、それをさらに昇順に並べ替える
+        # (SQLiteではサブクエリやウィンドウ関数が使えるが、シンプルに全件取得してPython側でハンドリングも可)
+        # ここではシンプルに最新N件のメッセージを取得（userとmodelそれぞれを1件と数える）
         cursor.execute(
             f"""
         SELECT role, author_name, content FROM (
@@ -707,35 +712,56 @@ def load_history_from_db(limit=100):  # 例: 直近100件のやり取りを読�
         """,
             (limit,),
         )
-        rows = cursor.fetchall()
+        raw_rows_from_db = cursor.fetchall()
         print(
-            f"テーブル {table_name} から {len(rows)} 件の履歴を読み込みました。"
+            f"テーブル {table_name} から {len(raw_rows_from_db)} 件の履歴をDBより読み込みました。"
         )  # テーブル名を出力
     except sqlite3.OperationalError as e:
         # テーブルが存在しない場合などに発生するエラー
         print(
-            f"警告: テーブル {table_name} が見つかりません。新しい履歴を開始します。エラー: {e}"
+            f"情報: テーブル {table_name} が見つからないかアクセスできません。新しい履歴として扱います。エラー詳細: {e}"
         )
-        rows = []  # テーブルがない場合は履歴なしとして扱う
-    conn.close()
+        # raw_rows_from_db は空のまま
+    except Exception as e:
+        print(f"DB履歴の読み込み中に予期せぬエラーが発生しました ({table_name}): {e}")
+        raw_rows_from_db = []  # 念のため空にする
+    finally:
+        if conn:
+            conn.close()
 
     history_for_model = []
-    if not rows:  # DBに履歴がない場合
-        # 初期人格設定プロンプトをここで生成
-        print("DBに履歴がなかったため、初期人格設定プロンプトを使用します。")
+
+    if not raw_rows_from_db:
+        print(f"DBテーブル {table_name} から読み込む有効な会話履歴はありませんでした。")
     else:
-        for row in rows:
-            # DBのcontentには既に "ユーザー名: メッセージ" の形式で入っている想定
-            # または、author_nameとcontentを組み合わせてGeminiに渡す形式にする
-            # ここでは、DBのcontentをそのままtextとして使用
-            text_content = row["content"]
-            # Geminiに渡す際、ユーザー発言には発言者名を付与する運用の場合、
-            # DB保存時にcontentに含めるか、ここで再構成するか選択
-            # 例: if row['role'] == 'user': text_content = f"{row['author_name']}: {row['content']}"
-            history_for_model.append(
-                {"role": row["role"], "parts": [{"text": text_content}]}
+        # 履歴が必ず "user" メッセージから始まるように調整
+        start_index = -1
+        for i, row_data in enumerate(raw_rows_from_db):
+            if row_data["role"] == "user":
+                start_index = i
+                break
+
+        if start_index != -1:
+            # "user" メッセージが見つかった場合、そこから履歴を開始
+            effective_rows = raw_rows_from_db[start_index:]
+            if start_index > 0:
+                print(
+                    f"読み込んだDB履歴の先頭 {start_index} 件 (modelロール) をスキップし、最初のuserロールのメッセージから履歴を開始します。"
+                )
+
+            for row_data in effective_rows:
+                text_content = row_data["content"]
+                history_for_model.append(
+                    {"role": row_data["role"], "parts": [{"text": text_content}]}
+                )
+            print(
+                f"DBから {len(effective_rows)} 件の整形済み会話履歴をモデル入力用に準備しました。"
             )
-        print(f"DBから {len(rows)} 件の履歴を読み込みました。")
+        else:
+            # 読み込んだ履歴内に "user" メッセージが見つからなかった場合
+            print(
+                f"読み込んだDB履歴 {len(raw_rows_from_db)} 件の中にuserロールのメッセージが見つからなかったため、DBからの会話履歴は使用しません。"
+            )
 
     return history_for_model
 
@@ -889,9 +915,6 @@ async def handle_shared_discord_message(
     print(
         f"{author_name}: {user_message_content}"
     )  # Discord側にエコーバックされるので必須ではない
-    add_message_to_db(
-        role="user", author_name=author_name, content=original_message_for_api
-    )
 
     try:
         MAX_HISTORY_LENGTH = 100  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
@@ -942,6 +965,11 @@ async def handle_shared_discord_message(
 
             if len(bot_response_text) <= MAX_DISCORD_MESSAGE_LENGTH:
                 # 応答が適切な長さであれば、DBに保存して返す
+                add_message_to_db(
+                    role="user",
+                    author_name=author_name,
+                    content=original_message_for_api,
+                )
                 add_message_to_db(
                     role="model", author_name="bot", content=bot_response_text
                 )
