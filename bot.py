@@ -777,8 +777,8 @@ def _create_chat_session(cache_name: str, history: list):
     global shared_chat_session
     chat_config = GenerateContentConfig(
         response_modalities=["TEXT"],
-        frequency_penalty=1.0,
-        temperature=0.3,
+        frequency_penalty=1.5,
+        presence_penalty=1.5,
         cached_content=cache_name,
     )
     shared_chat_session = client.chats.create(
