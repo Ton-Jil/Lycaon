@@ -770,6 +770,7 @@ active_character_key = None
 active_character_display_name = (
     "デフォルト"  # 現在のキャラクター表示名を保持するグローバル変数
 )
+active_cache_name = None
 
 
 def _create_chat_session(cache_name: str, history: list):
@@ -790,7 +791,7 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count
+    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count, active_cache_name
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
@@ -831,6 +832,8 @@ def initialize_chat_session(character_key_to_load=None):
             print(f"CachedContent を作成しました: {system_cache.name}")
         except Exception as e:
             print(f"CachedContent の作成中にエラーが発生しました: {e}")
+
+    active_cache_name = system_cache.name
 
     create_table_if_not_exists()  # DBテーブル作成
 
@@ -900,7 +903,7 @@ async def handle_shared_discord_message(
     """
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
     """
-    global shared_chat_session, active_character_key
+    global shared_chat_session, active_character_key, active_cache_name
 
     if not shared_chat_session:
         # ボット起動時に初期化されているはずだが、念のため
@@ -939,6 +942,12 @@ async def handle_shared_discord_message(
     if image_contents:
         for image_part in image_contents:
             first_api_call_contents.append(image_part)
+
+    # キャッシュの期限切れチェック
+    try:
+        cache_obj = client.caches.get(name=active_cache_name)
+    except Exception as e:
+        initialize_chat_session()
 
     MAX_ATTEMPTS_FOR_LENGTH = 3  # 初回試行 + 2回の短縮試行
     bot_response_text = ""
