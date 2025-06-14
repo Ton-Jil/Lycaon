@@ -870,7 +870,6 @@ def get_current_time_japan():
     wait=wait_exponential(
         multiplier=1, min=4, max=30
     ),  # 最小4秒、その後8秒、16秒と指数関数的に増加し、最大30秒まで待機
-    retry=retry_if_exception_type(ServerError),
 )
 def _send_message_with_retry(chat_session, contents):
     """
@@ -880,6 +879,8 @@ def _send_message_with_retry(chat_session, contents):
     try:
         response = chat_session.send_message(contents)
         # print("Gemini APIからの応答を受信しました。")
+        if response.text is None:
+            raise Exception("Response text is None.")
         return response
     except ServerError as e:
         print(
