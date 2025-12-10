@@ -430,7 +430,7 @@ shared_chat_session = None
 initial_conversation_history_count = (
     0  # Tracks the number of initial prompts for history pruning
 )
-MODEL_NAME = "gemini-2.0-flash-001"
+MODEL_NAME = "gemini-2.5-flash"
 HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -778,8 +778,6 @@ def _create_chat_session(cache_name: str, history: list):
     global shared_chat_session
     chat_config = GenerateContentConfig(
         response_modalities=["TEXT"],
-        frequency_penalty=1.5,
-        presence_penalty=1.5,
         cached_content=cache_name,
     )
     shared_chat_session = client.chats.create(
