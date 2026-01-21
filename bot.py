@@ -13,7 +13,7 @@ from google.genai.types import (
     GoogleSearch,
     Part,
     Tool,
-    CreateCachedContentConfig,
+    ThinkingConfig,
 )
 from google.genai.errors import ServerError
 from tenacity import (
@@ -114,31 +114,6 @@ async def resetchat(ctx):
 
 @resetchat.error
 async def resetchat_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("このコマンドを実行する権限がありません。", mention_author=False)
-    else:
-        # その他のエラーはコンソールに出力するなど
-        print(f"コマンドエラー: {error}")
-        await ctx.send("コマンド実行中にエラーが発生しました。", mention_author=False)
-
-
-@bot.command(name="resetcache")
-@commands.has_permissions(administrator=True)  # 管理者権限が必要な場合
-async def resetcache(ctx):
-    """
-    全キャッシュをリセットします（管理者限定）。
-    """
-    global active_character_key
-
-    for cache in client.caches.list():
-        client.caches.delete(name=cache.name)
-
-    initialize_chat_session(active_character_key)
-    await ctx.send("全キャッシュをリセットしました。", mention_author=False)
-
-
-@resetcache.error
-async def resetcache_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("このコマンドを実行する権限がありません。", mention_author=False)
     else:
@@ -430,7 +405,7 @@ shared_chat_session = None
 initial_conversation_history_count = (
     0  # Tracks the number of initial prompts for history pruning
 )
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3-flash-preview"
 HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -576,82 +551,14 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user = main_char_data.get(
         "system_instruction_user", ""
     )  # メインキャラの基本指示
-    system_instruction_user += "ユーザーの発言には改行区切りで発言時間、ユーザー名、発言内容が付与されています。\nユーザーの発言の形式\n発言時間\nユーザー名\n発言内容\n\n応答の際には、誰のどの発言に対して応答しているのかを意識して、応答内容に含めるときはこの付与されたユーザー名を取り除いてから応答してください。また、会話の時間も意識してください。あなたは発言内容に対する回答のメッセージだけを返し、時間などを含めないでください。\nあなたの回答の形式\n発言内容に対する回答のみ\n\nユーザーの発言内容を理解した上で、必ずあなた自身の言葉で応答してください。ユーザーの話し方に安易に影響されないようにしてください。同じ文字やフレーズの極端な繰り返しを避け、簡潔で多様な表現を心がけてください。不自然に長い同じ文字の羅列は避けてください。次に詳細なキャラクター設定を示しますので、そのキャラになりきってメタ的な発言を避けるようにしてください。"
-    system_instruction_user += main_char_data.get("character_metadata", "")
-    # example_dialogues は system_instruction ではなく、会話履歴の例として final_initial_prompts に追加します。
-    example_dialogues_list = main_char_data.get(
-        "dialogue_examples", []
-    )  # JSON側のキー名に合わせる
-    initial_model_response = main_char_data.get("initial_model_response", "")
-    conversation_examples_list = main_char_data.get("conversation_examples", [])
+    system_instruction_user += "\n\n--- 入力形式について ---\nユーザーの発言は以下の形式で送信されます:\n発言者名\n発言内容\n\n発言者を明確に認識し、それが誰からの発言かを理解した上で応答してください。常に誰に返答しているのか意識してください。\n応答では、相手の名前を適切に使用したり、その人の発言に対して直接応答する形にしてください。\n\nあなたの応答は会話の内容のみを含め、形式的な説明やメタな発言は避けてください。キャラクターらしく、自然な応答をしてください。"
 
-    if not system_instruction_user or not initial_model_response:
+    if not system_instruction_user:
         print(
             f"警告: メインキャラクター「{display_name}」のプロンプト基本情報が不完全です。"
         )
 
-    # 周辺人物の基本情報の文字列を構築
-    supplementary_related_info_parts = []
-    if "related_characters" in main_char_data and isinstance(
-        main_char_data["related_characters"], list
-    ):
-        related_character_keys = main_char_data["related_characters"]
-        if related_character_keys:  # リストが空でない場合
-            supplementary_related_info_parts.append(
-                "\n\n--- 参考: あなたと関わりのある人物の詳細情報 ---"
-            )
-            for related_key in related_character_keys:
-                if (
-                    isinstance(related_key, str)
-                    and related_key not in processed_relations
-                ):
-                    related_data = _load_raw_character_data(related_key)
-                    if related_data:
-                        related_display_name = related_data.get(
-                            "character_name_display", related_key
-                        )
-                        related_description = related_data.get(
-                            "character_metadata", "特に公表されている説明はありません。"
-                        )  # 短い説明
-
-                        info_line = (
-                            f"\n- {related_display_name} ({related_description})"
-                        )
-                        supplementary_related_info_parts.append(info_line)
-
-    # メインキャラクターのシステムプロンプトに、抽出した周辺人物の基本情報を「参考情報」として追記
-    if (
-        len(supplementary_related_info_parts) > 1
-    ):  # ヘッダー行があるので1より大きいかで判定
-        system_instruction_user += "".join(supplementary_related_info_parts)
-        # メインプロンプト内で関係性を記述してもらうことを促す一文は、
-        # メインの system_instruction_user 自体に含めてもらう方が自然かもしれません。
-        # 例: 「あなたは以下の人物たちのことも知っています。彼らとの関係性はあなたの設定に基づきます。」
-
-    # example_dialogues_list を system_instruction_user に含める
-    if example_dialogues_list:
-        system_instruction_user += (
-            "\n\n--- 発言例、以下の発現例に言葉遣いを可能な限り寄せてください ---"
-        )
-        for dialogue_string in example_dialogues_list:
-            # 会話例を整形して追加（ここでは単純に文字列として追加）
-            # 必要に応じて、ユーザーとモデルのターンを区別するような書式にしても良い
-            system_instruction_user += f"\n{dialogue_string}"
-        system_instruction_user += "\n--- 発言例ここまで ---"
-
     final_initial_prompts = []
-
-    for example_message in conversation_examples_list:
-        if (
-            isinstance(example_message, dict)
-            and example_message.get("role") in ["user", "model"]
-            and isinstance(example_message.get("parts"), list)
-        ):
-            final_initial_prompts.append(example_message)
-        else:
-            print(
-                f"警告: キャラクター「{display_name}」の conversation_examples 内の要素の構造が不正です: {example_message}"
-            )
     return system_instruction_user, final_initial_prompts, display_name
 
 
@@ -770,16 +677,20 @@ active_character_key = None
 active_character_display_name = (
     "デフォルト"  # 現在のキャラクター表示名を保持するグローバル変数
 )
-active_cache = None
 
 
-def _create_chat_session(cache_name: str, history: list):
+def _create_chat_session(system_instruction: str = None, history: list = None):
     """Helper function to create a new chat session."""
     global shared_chat_session
+    if history is None:
+        history = []
+
     chat_config = GenerateContentConfig(
         response_modalities=["TEXT"],
-        cached_content=cache_name,
+        system_instruction=system_instruction,
+        thinking_config=ThinkingConfig(thinking_budget=0),
     )
+
     shared_chat_session = client.chats.create(
         model=MODEL_NAME, history=history, config=chat_config
     )
@@ -789,7 +700,7 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count, active_cache
+    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
@@ -807,41 +718,15 @@ def initialize_chat_session(character_key_to_load=None):
         shared_chat_session = None
         return
 
-    # cacheの作成
-    safe_model_name_for_cache = MODEL_NAME.replace("/", "-")
-    cache_name = f"{character_key_to_load}-{safe_model_name_for_cache}-system-prompt"
-    system_cache = None
-    for cache in client.caches.list():
-        if cache.display_name == cache_name:
-            system_cache = cache
-
-    if system_cache is None:
-        print(f"CachedContent が見つからないため新規作成: {cache_name}")
-        try:
-            system_cache = client.caches.create(
-                model=MODEL_NAME,
-                config=CreateCachedContentConfig(
-                    display_name=cache_name,
-                    system_instruction=system_instruction_text,
-                    ttl="3600s",
-                    tools=[google_search_tool],
-                ),
-            )
-            print(f"CachedContent を作成しました: {system_cache.name}")
-        except Exception as e:
-            print(f"CachedContent の作成中にエラーが発生しました: {e}")
-
-    active_cache = system_cache
-
     create_table_if_not_exists()  # DBテーブル作成
 
-    # DBから履歴を読み込み (例: 直近50ペア = 100メッセージ)
-    history_from_db = load_history_from_db(limit=50)
+    # DBから履歴を読み込み
+    history_from_db = load_history_from_db(limit=10)
 
-    # 4. 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
+    # 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
     final_history_for_session = initial_conversation_history + history_from_db
     _create_chat_session(
-        cache_name=system_cache.name, history=final_history_for_session
+        system_instruction=system_instruction_text, history=final_history_for_session
     )
     initial_conversation_history_count = len(initial_conversation_history)
     set_setting_in_db(
@@ -850,19 +735,6 @@ def initialize_chat_session(character_key_to_load=None):
     print(
         f"チャットセッションがキャラクター「{active_character_display_name}」とDB履歴で初期化されました。"
     )
-
-
-# 東京のタイムゾーンを設定
-tokyo_tz = pytz.timezone("Asia/Tokyo")
-
-
-def get_current_time_japan():
-    """日本標準時 (JST) の現在の日時を取得し、指定フォーマットの文字列で返す"""
-    now_tokyo = datetime.datetime.now(tokyo_tz)
-    # AIに分かりやすいフォーマットで返します。必要に応じて調整してください。
-    return now_tokyo.strftime(
-        "%Y年%m月%d日 (%A) %H時%M分%S秒 JST"
-    )  # 例: 2025年05月17日 (金曜日) 22時12分30秒 JST
 
 
 # Gemini API呼び出しにリトライを適用するヘルパー関数
@@ -901,7 +773,7 @@ async def handle_shared_discord_message(
     """
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
     """
-    global shared_chat_session, active_character_key, active_cache
+    global shared_chat_session, active_character_key
 
     if not shared_chat_session:
         # ボット起動時に初期化されているはずだが、念のため
@@ -910,10 +782,7 @@ async def handle_shared_discord_message(
         if not shared_chat_session:
             return "申し訳ありません、ボットのチャット機能が正しく起動していません。管理者にご連絡ください。"
 
-    current_time_str = get_current_time_japan()
-    original_message_for_api = (
-        f"{current_time_str}\n{author_name}\n{user_message_content}"
-    )
+    original_message_for_api = f"{author_name}\n{user_message_content}"
     print(
         f"{author_name}: {user_message_content}"
     )  # Discord側にエコーバックされるので必須ではない
@@ -940,10 +809,6 @@ async def handle_shared_discord_message(
     if image_contents:
         for image_part in image_contents:
             first_api_call_contents.append(image_part)
-
-    # キャッシュの期限切れチェック
-    if active_cache.expire_time < datetime.datetime.now(datetime.timezone.utc):
-        initialize_chat_session(active_character_key)
 
     MAX_ATTEMPTS_FOR_LENGTH = 3  # 初回試行 + 2回の短縮試行
     bot_response_text = ""
