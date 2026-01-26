@@ -551,7 +551,7 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user = main_char_data.get(
         "system_instruction_user", ""
     )  # メインキャラの基本指示
-    system_instruction_user += "\n\n--- 入力形式について ---\nユーザーの発言は以下の形式で送信されます:\n発言者名\n発言内容\n\n発言者を明確に認識し、それが誰からの発言かを理解した上で応答してください。常に誰に返答しているのか意識してください。\n応答では、相手の名前を適切に使用したり、その人の発言に対して直接応答する形にしてください。\n\nあなたの応答は会話の内容のみを含め、形式的な説明やメタな発言は避けてください。キャラクターらしく、自然な応答をしてください。"
+    system_instruction_user += "\n\n--- 入力形式について ---\nユーザーの発言は以下の形式で送信されます:\n発言者名\n発言内容\n\n発言者を明確に認識し、それが誰からの発言かを理解した上で応答してください。常に誰に返答しているのか意識してください。\n応答では、相手の名前を適切に使用したり、その人の発言に対して直接応答する形にしてください。\nキャラクターらしく、自然な応答をしてください。\n\n--- Google検索ツールの使用について ---\nあなたは Google Search Tool を利用して、現在の日付、特定の人物情報、最新のニュース、統計データなど、あなたの学習データに含まれていない最新情報や曖昧な情報について検索できます。\n知らない情報や確信が持てない内容、最新情報が必要な場合は、躊躇なく検索ツールを使用してください。ユーザーが求める正確な情報を提供することが重要です。"
 
     if not system_instruction_user:
         print(
@@ -689,6 +689,7 @@ def _create_chat_session(system_instruction: str = None, history: list = None):
         response_modalities=["TEXT"],
         system_instruction=system_instruction,
         thinking_config=ThinkingConfig(thinking_budget=0),
+        tools=[google_search_tool],
     )
 
     shared_chat_session = client.chats.create(
