@@ -551,7 +551,18 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user = main_char_data.get(
         "system_instruction_user", ""
     )  # メインキャラの基本指示
-    system_instruction_user += "\n\n--- 入力形式について ---\nユーザーの発言は以下の形式で送信されます:\n発言者名\n発言内容\n\n発言者を明確に認識し、それが誰からの発言かを理解した上で応答してください。常に誰に返答しているのか意識してください。\n応答では、相手の名前を適切に使用したり、その人の発言に対して直接応答する形にしてください。\nキャラクターらしく、自然な応答をしてください。\n\n--- Google検索ツールの使用について ---\nあなたは Google Search Tool を利用して、現在の日付、特定の人物情報、最新のニュース、統計データなど、あなたの学習データに含まれていない最新情報や曖昧な情報について検索できます。\n知らない情報や確信が持てない内容、最新情報が必要な場合は、躊躇なく検索ツールを使用してください。ユーザーが求める正確な情報を提供することが重要です。"
+    # 以下は Gemini のプロンプト ベストプラクティスに沿った構造化された補助指示です。
+    system_instruction_user += (
+        "\n\n<context>キャラクター設定として上記のプロンプトを前提とする。</context>\n"
+        "<task>目的: ユーザーと自然な会話を継続し、キャラクター性（口調・動機）を一貫して守る。</task>\n"
+        "<input_format>ユーザー発言は次の形式で送られます\n発言者名\n発言内容\n画像は別のPartオブジェクトとして渡されることがある。</input_format>\n"
+        "<output_requirements>言語: 日本語。デフォルトは簡潔で直接的。必要ならユーザーが「詳しく」と要求する。出力は会話文、相手の名前を明示して応答、Discord制限: 最大2000文字。</output_requirements>\n"
+        "<constraints>'私はAI' を明示しない。差別的・違法行為助長表現禁止。\n文体・語彙・文長を定期的に変化させ、過度に似た導入句や決まり文句を避ける。過去の自分の発言をそのまま繰り返したり逐次的に修正するような出力を行わないこと。</constraints>\n"
+        "<tools>GoogleSearch: 知らない情報や確信が持てない内容、最新情報が必要な場合は、躊躇なく検索ツールを使用してください。ユーザーが求める正確な情報を提供すること。</tools>\n"
+        "<multi_modal>画像: Partオブジェクトを受け取る。画像に基づく記述は簡潔に、視覚的情報を補助的に扱う。</multi_modal>\n"
+        "<priority>優先順: task/constraints/output_requirements > tools > multi_modal。</priority>\n"
+        "<anchor>上記指示に基づき、以下のユーザー入力に答えてください:</anchor>\n"
+    )
 
     if not system_instruction_user:
         print(
@@ -657,10 +668,16 @@ def load_history_from_db(limit=100):  # 例: 直近100件のやり取りを読�
                 )
 
             for row_data in effective_rows:
-                text_content = row_data["content"]
-                history_for_model.append(
-                    {"role": row_data["role"], "parts": [{"text": text_content}]}
-                )
+                if row_data["role"] == "user":
+                    text_content = row_data["content"]
+                    history_for_model.append(
+                        {"role": "user", "parts": [{"text": text_content}]}
+                    )
+                else:
+                    # 過去のボット応答は逐語でモデルに渡すと自己模倣を助長するため省略またはプレースホルダを渡す
+                    history_for_model.append(
+                        {"role": "model", "parts": [{"text": "[前のボット応答は省略]"}]}
+                    )
             print(
                 f"DBから {len(effective_rows)} 件の整形済み会話履歴をモデル入力用に準備しました。"
             )
