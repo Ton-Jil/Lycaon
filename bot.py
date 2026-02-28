@@ -742,7 +742,7 @@ def initialize_chat_session(character_key_to_load=None):
     create_table_if_not_exists()  # DBテーブル作成
 
     # DBから履歴を読み込み
-    history_from_db = load_history_from_db(limit=10)
+    history_from_db = load_history_from_db(limit=30)
 
     # 最終的な履歴を作成: (キャラクタープロンプト + DBからの会話履歴)
     final_history_for_session = initial_conversation_history + history_from_db
