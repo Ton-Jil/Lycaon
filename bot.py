@@ -36,6 +36,23 @@ TARGET_CHANNEL_IDS = {
 
 MAX_DISCORD_MESSAGE_LENGTH = 2000  # Discord's message character limit
 
+FALLBACK_MIME_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".webm": "audio/webm",
+}
+
 intents = discord.Intents.default()
 intents.messages = True  # メッセージ関連のイベントを処理するために必要
 intents.message_content = True  # メッセージ内容を読み取るために必要
@@ -323,49 +340,58 @@ async def on_message(message):
     else:
         pass
 
-    image_contents = []
+    attachment_contents = []
     if message.attachments:
         print(
-            f"画像付きメッセージを受信しました from {message.author.display_name} in channel {message.channel.name}"
+            f"添付ファイル付きメッセージを受信しました from {message.author.display_name} in channel {message.channel.name}"
         )
 
         # 応答を生成するかどうかの基本的なフラグ（テキスト応答のロジックとは別に判定しても良い）
         # 例えば、画像付きメッセージの場合はメンションの有無にかかわらず常に画像を処理するなど
-        process_image_message = True  # 画像付きメッセージは常に処理すると仮定
+        process_attachment_message = (
+            True  # 添付ファイル付きメッセージは常に処理すると仮定
+        )
 
-        if process_image_message:
+        if process_attachment_message:
             author_name = message.author.display_name
 
             # ボットが処理中であることを示す（タイピング表示）
             async with message.channel.typing():
-                # 添付ファイルごとに処理（複数の画像がある場合）
+                # 添付ファイルごとに処理（複数の画像/音声がある場合）
                 for attachment in message.attachments:
-                    # 添付ファイルが画像であることを確認 (MIMEタイプをチェック)
-                    if attachment.content_type and attachment.content_type.startswith(
-                        "image/"
-                    ):
+                    content_type = attachment.content_type or ""
+                    file_ext = os.path.splitext(attachment.filename.lower())[1]
+                    fallback_mime = FALLBACK_MIME_TYPES.get(file_ext)
+                    resolved_mime_type = content_type or fallback_mime
+
+                    is_supported_type = resolved_mime_type and (
+                        resolved_mime_type.startswith("image/")
+                        or resolved_mime_type.startswith("audio/")
+                    )
+
+                    if is_supported_type:
                         try:
-                            # 画像データをダウンロード（非同期）
-                            image_data_bytes = await attachment.read()
+                            # 添付データをダウンロード（非同期）
+                            file_data_bytes = await attachment.read()
                             print(
-                                f"画像をダウンロードしました: {attachment.filename} ({attachment.content_type})"
+                                f"添付ファイルをダウンロードしました: {attachment.filename} ({resolved_mime_type})"
                             )
 
                             # Gemini APIに渡す入力コンテンツを準備
-                            # テキストと画像を組み合わせてリストとして渡します。
+                            # テキストと添付（画像/音声）を組み合わせてリストとして渡します。
                             # google-generativeai ライブラリは、bytes と MIMEタイプから Part オブジェクトへの変換を内部で行うか、
                             # generate_content / send_message にそのまま渡せるように設計されています。
 
-                            # 画像データを Part オブジェクト形式に変換して追加
+                            # 添付データを Part オブジェクト形式に変換して追加
                             # Part.from_bytes を使うのが明示的で推奨
-                            image_part = Part.from_bytes(
-                                data=image_data_bytes, mime_type=attachment.content_type
+                            attachment_part = Part.from_bytes(
+                                data=file_data_bytes, mime_type=resolved_mime_type
                             )
-                            image_contents.append(image_part)
+                            attachment_contents.append(attachment_part)
 
                         except Exception as e:
                             print(
-                                f"画像処理またはGemini API呼び出し中にエラーが発生しました: {e}"
+                                f"添付ファイル処理またはGemini API呼び出し中にエラーが発生しました: {e}"
                             )
                             # APIエラーの詳細をログに出力することも重要
                             if hasattr(e, "response") and hasattr(
@@ -373,7 +399,7 @@ async def on_message(message):
                             ):
                                 print(f"API Feedback: {e.response.prompt_feedback}")
                             await message.reply(
-                                f"画像の処理中にエラーが発生しました。",
+                                f"添付ファイルの処理中にエラーが発生しました。",
                                 mention_author=False,
                             )
 
@@ -387,7 +413,7 @@ async def on_message(message):
             user_input = user_input.replace(bot.user.mention, "").strip()
         async with message.channel.typing():
             bot_reply = await handle_shared_discord_message(
-                author_name, user_input, image_contents
+                author_name, user_input, attachment_contents
             )
 
         if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
@@ -789,7 +815,7 @@ def _send_message_with_retry(chat_session, contents):
 
 
 async def handle_shared_discord_message(
-    author_name, user_message_content, image_contents=None
+    author_name, user_message_content, attachment_contents=None
 ):
     """
     Discordのメッセージを受け取り、Gemini APIに応答を生成させる (共有・効率化版)
@@ -828,9 +854,9 @@ async def handle_shared_discord_message(
 
     # --- Gemini APIへの送信と応答長チェック ---
     first_api_call_contents = [original_message_for_api]
-    if image_contents:
-        for image_part in image_contents:
-            first_api_call_contents.append(image_part)
+    if attachment_contents:
+        for attachment_part in attachment_contents:
+            first_api_call_contents.append(attachment_part)
 
     MAX_ATTEMPTS_FOR_LENGTH = 3  # 初回試行 + 2回の短縮試行
     bot_response_text = ""
