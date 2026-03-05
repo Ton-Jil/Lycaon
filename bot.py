@@ -61,10 +61,6 @@ bot = commands.Bot(
     command_prefix="!", intents=intents
 )  # コマンドのプレフィックスを'!'に設定
 
-auto_speak_channels = (
-    {}
-)  # チャンネルごとの最終活動時刻を記録 {channel_id: datetime_obj}
-
 
 @bot.command(name="resetchat")
 @commands.has_permissions(administrator=True)  # 管理者権限が必要な場合
@@ -207,7 +203,7 @@ async def listchars_command(ctx):
             # load_character_definition は初期プロンプトも読むので、表示名だけなら別のヘルパー関数が良いかも
             # または、ここではファイル名キーと表示名のみを表示する
             try:
-                _, display_name = load_character_definition(
+                _, _, display_name = load_character_definition(
                     char_key
                 )  # 表示名取得のため一時的に読み込み
                 available_chars_info.append(
@@ -227,54 +223,6 @@ async def listchars_command(ctx):
             "利用可能なキャラクター設定ファイルが見つかりません。",
             mention_author=False,
         )
-
-
-@bot.command(name="autospeak")
-async def autospeak_command(ctx, state: str):
-    global auto_speak_channels
-    state = state.lower()
-
-    if state == "on":
-        if not auto_speak_channels:
-            check_auto_speak.start()
-        auto_speak_channels[ctx.channel.id] = datetime.datetime.now()
-        await ctx.send("自動発言モードを有効にしました。", mention_author=False)
-    elif state == "off":
-        if ctx.channel.id in auto_speak_channels:
-            del auto_speak_channels[ctx.channel.id]
-            if not auto_speak_channels:
-                check_auto_speak.stop()
-            await ctx.send("自動発言モードを無効にしました。", mention_author=False)
-        else:
-            await ctx.send("自動発言モードは既に無効です。", mention_author=False)
-    else:
-        await ctx.send(
-            "自動発言モードの状態は 'on' または 'off' で指定してください。\n使用法: `!autospeak on` または `!autospeak off`",
-            mention_author=False,
-        )
-
-
-@tasks.loop(minutes=1)
-async def check_auto_speak():
-    global auto_speak_channels
-    current_time = datetime.datetime.now()
-    for channel_id, last_activity_time in auto_speak_channels.items():
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            continue
-        if (current_time - last_activity_time).seconds > 60:
-            auto_speak_prompt_text = "過去の会話を踏まえて、ユーザーとの会話を再開するような発言をしてください。挨拶のみ発言することは避けてください。過去に自分が提案したことがある話題の繰り返しは避けるようにしてください。話題がない場合はキャラクター情報から会話のきっかけを考えてください。"
-            async with channel.typing():
-                response = _send_message_with_retry(
-                    shared_chat_session, [auto_speak_prompt_text]
-                )
-                bot_reply = response.text
-
-            if bot_reply and bot_reply.strip():
-                await channel.send(bot_reply)
-                auto_speak_channels[channel_id] = current_time
-                add_message_to_db("user", "system", auto_speak_prompt_text)
-                add_message_to_db("model", "bot", bot_reply)
 
 
 @bot.command("talktome")
@@ -418,8 +366,6 @@ async def on_message(message):
 
         if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
             await message.reply(bot_reply, mention_author=False)
-            if message.channel.id in auto_speak_channels:
-                auto_speak_channels[message.channel.id] = datetime.datetime.now()
         else:
             print(
                 f"Warning: Bot generated an empty or whitespace-only reply for user input: '{user_input}'"
@@ -836,7 +782,7 @@ async def handle_shared_discord_message(
     print(original_message_for_api)
 
     try:
-        MAX_HISTORY_LENGTH = 100  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
+        MAX_HISTORY_LENGTH = 60  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
 
         # Chatオブジェクトから現在の履歴を取得 (curated=True でモデルに送信される履歴を取得)
         current_history_list = shared_chat_session.get_history(curated=True)
