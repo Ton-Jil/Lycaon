@@ -680,7 +680,7 @@ def _create_chat_session(system_instruction: str = None, history: list = None):
     chat_config = GenerateContentConfig(
         response_modalities=["TEXT"],
         system_instruction=system_instruction,
-        thinking_config=ThinkingConfig(thinking_budget=0),
+        thinking_config=ThinkingConfig(thinking_level="low"),
         tools=[google_search_tool, google_url_context_tool],
     )
 
