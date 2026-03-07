@@ -342,26 +342,26 @@ async def on_message(message):
     is_mentioned = bot.user.mentioned_in(message)
     should_respond = should_respond_to_message(message)
 
+    if not should_respond:
+        return
+
     async with message.channel.typing():
         attachment_contents = []
         if message.attachments:
             attachment_contents = await extract_supported_attachment_parts(message)
 
-        # ★★★ ここまで画像添付ファイルの処理 ★★★
+        author_name = message.author.display_name
+        user_input = build_user_input(message, is_mentioned)
+        bot_reply = await handle_shared_discord_message(
+            author_name, user_input, attachment_contents
+        )
 
-        if should_respond:
-            author_name = message.author.display_name
-            user_input = build_user_input(message, is_mentioned)
-            bot_reply = await handle_shared_discord_message(
-                author_name, user_input, attachment_contents
+        if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
+            await message.reply(bot_reply, mention_author=False)
+        else:
+            print(
+                f"Warning: Bot generated an empty or whitespace-only reply for user input: '{user_input}'"
             )
-
-            if bot_reply and bot_reply.strip():  # Ensure there's non-whitespace content
-                await message.reply(bot_reply, mention_author=False)
-            else:
-                print(
-                    f"Warning: Bot generated an empty or whitespace-only reply for user input: '{user_input}'"
-                )
 
 
 # --- グローバルなChatSession (メモリキャッシュとして) ---
