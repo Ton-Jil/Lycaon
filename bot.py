@@ -6,7 +6,7 @@ from typing import List
 
 import discord
 import pytz
-from discord.ext import commands, tasks
+from discord.ext import commands
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import (
@@ -20,7 +20,6 @@ from google.genai.types import (
 from google.genai.errors import ServerError
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -367,11 +366,7 @@ async def on_message(message):
 # --- グローバルなChatSession (メモリキャッシュとして) ---
 # スクリプトが再起動されると失われるため、ファイル保存と組み合わせる
 shared_chat_session = None
-initial_conversation_history_count = (
-    0  # Tracks the number of initial prompts for history pruning
-)
 MODEL_NAME = "gemini-3-flash-preview"
-HISTORY_FILE = "shared_chat_history.json"  # 全ての会話をこの単一ファイルに保存
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 google_search_tool = Tool(google_search=GoogleSearch())
@@ -677,7 +672,7 @@ def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
     """
-    global shared_chat_session, active_character_key, active_character_display_name, initial_conversation_history_count
+    global shared_chat_session, active_character_key, active_character_display_name
 
     if character_key_to_load is None:
         character_key_to_load = get_setting_from_db("current_character_key", "lycaon")
@@ -705,7 +700,6 @@ def initialize_chat_session(character_key_to_load=None):
     _create_chat_session(
         system_instruction=system_instruction_text, history=final_history_for_session
     )
-    initial_conversation_history_count = len(initial_conversation_history)
     set_setting_in_db(
         "current_character_key", character_key_to_load
     )  # 現在のキャラをDBに保存
