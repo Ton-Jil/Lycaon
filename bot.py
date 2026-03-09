@@ -1,9 +1,7 @@
-import asyncio
 import datetime
 import json
 import os
 import sqlite3
-import uuid
 from typing import List
 
 import discord
@@ -25,15 +23,6 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from graphiti_core import Graphiti
-from graphiti_core.llm_client.gemini_client import GeminiClient
-from graphiti_core.llm_client.config import LLMConfig
-from graphiti_core.embedder.gemini import GeminiEmbedder, GeminiEmbedderConfig
-from graphiti_core.cross_encoder.gemini_reranker_client import GeminiRerankerClient
-from graphiti_core.driver.kuzu_driver import KuzuDriver
-from graphiti_core.graph_queries import get_fulltext_indices
-from graphiti_core.driver.driver import GraphProvider
-from graphiti_core.nodes import EpisodeType
 
 load_dotenv()  # .envファイルから環境変数を読み込む
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -320,7 +309,6 @@ async def talktome_command(ctx):
 async def on_ready():
     print(f"{bot.user.name} がDiscordに接続しました！")
     print("------")
-    await initialize_graphiti()
     initialize_chat_session()
 
 
@@ -378,8 +366,6 @@ async def on_message(message):
 # --- グローバルなChatSession (メモリキャッシュとして) ---
 # スクリプトが再起動されると失われるため、ファイル保存と組み合わせる
 shared_chat_session = None
-graphiti_instance: Graphiti | None = None
-GRAPHITI_DB_PATH = "./graphiti_db"
 MODEL_NAME = "gemini-3-flash-preview"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -526,10 +512,10 @@ def load_character_definition(main_character_key, processed_relations=None):
     system_instruction_user += (
         "\n\n<context>キャラクター設定として上記のプロンプトを前提とする。</context>\n"
         "<task>目的: ユーザーと自然な会話を継続し、キャラクター性（口調・動機）を一貫して守る。</task>\n"
-        "<input_format>ユーザー発言は次の形式で送られます\n<speaker>発言者名</speaker>\n<timestamp>送信時刻(ISO 8601, タイムゾーン付き・日本標準時/JSTで提供されます)</timestamp>\n<message>発言内容</message>\n発言内容に関連する長期記憶がある場合は<memory>タグで前置される。画像は別のPartオブジェクトとして渡されることがある。</input_format>\n"
+        "<input_format>ユーザー発言は次の形式で送られます\n発言者名\n送信時刻(ISO 8601, タイムゾーン付き・日本標準時/JSTで提供されます)\n発言内容\n画像は別のPartオブジェクトとして渡されることがある。</input_format>\n"
         "<note>送信時刻は JST の ISO 形式で与えられます。発言内容の時間的文脈が必要な場合はこの時刻を参照してください。モデルは自身で時刻を推測せず、この提供された時刻を優先して扱ってください。</note>\n"
         "<output_requirements>言語: 日本語。デフォルトは簡潔で直接的。必要ならユーザーが「詳しく」と要求する。出力は会話文、相手の名前を明示して応答、Discord制限: 最大2000文字。</output_requirements>\n"
-        "<constraints>'私はAI' を明示しない。差別的・違法行為助長表現禁止。\n発言者名が異なる場合は別人として扱うこと。\n文体・語彙・文長を定期的に変化させ、過度に似た導入句や決まり文句を避ける。過去の自分の発言をそのまま繰り返したり逐次的に修正するような出力を行わないこと。\n回答に必要な事実がプロンプト内にない場合は推測で断定せず、GoogleSearch を使って確認すること。\nキャラクター設定に不足している情報が必要な場合も、創作せず GoogleSearch で確認し、確認できない要素は断定しないこと。\n応答は会話の返答内容のみとし、<speaker>、<timestamp>、<message>、<memory> などの入力フォーマット用XMLタグや、発言者ラベル・メタ情報を含めないこと。</constraints>\n"
+        "<constraints>'私はAI' を明示しない。差別的・違法行為助長表現禁止。\n発言者名が異なる場合は別人として扱うこと。\n文体・語彙・文長を定期的に変化させ、過度に似た導入句や決まり文句を避ける。過去の自分の発言をそのまま繰り返したり逐次的に修正するような出力を行わないこと。\n回答に必要な事実がプロンプト内にない場合は推測で断定せず、GoogleSearch を使って確認すること。\nキャラクター設定に不足している情報が必要な場合も、創作せず GoogleSearch で確認し、確認できない要素は断定しないこと。</constraints>\n"
         "<tools>利用可能なツール: UrlContext(指定されたURLの内容を読み取る)、GoogleSearch(情報検索)。これらのツールは必要に応じて使用して正確な情報を取得してください。プロンプトや会話履歴・画像だけでは回答に必要な情報が不足している場合や、キャラクター情報の補完が必要な場合は、推測で補わず GoogleSearch を使って確認してください。ツールを使った結果はツールの出力を忠実に扱い、事実確認が取れない場合はその旨を明示してください。</tools>\n"
         "<multi_modal>画像: Partオブジェクトを受け取る。画像に基づく記述は簡潔に、視覚的情報を補助的に扱う。</multi_modal>\n"
         "<priority>優先順: task/constraints/output_requirements > tools > multi_modal。</priority>\n"
@@ -682,89 +668,6 @@ def _create_chat_session(system_instruction: str = None, history: list = None):
     )
 
 
-async def initialize_graphiti():
-    """Graphiti長期記憶エンジンを初期化する。"""
-    global graphiti_instance
-    try:
-        llm_client = GeminiClient(
-            config=LLMConfig(api_key=GOOGLE_API_KEY, model="gemini-2.5-flash-lite")
-        )
-        embedder = GeminiEmbedder(
-            config=GeminiEmbedderConfig(
-                api_key=GOOGLE_API_KEY, embedding_model="gemini-embedding-001"
-            )
-        )
-        cross_encoder = GeminiRerankerClient(
-            config=LLMConfig(api_key=GOOGLE_API_KEY, model="gemini-2.5-flash-lite")
-        )
-        driver = KuzuDriver(db=GRAPHITI_DB_PATH)
-        # KuzuDriverは_database属性を初期化しないため手動でセットする (graphiti_core のバグ回避)
-        driver._database = ""
-        # KuzuDriverのsetup_schema()はテーブルのみ作成しFTSインデックスを作らないため手動で作成する
-        import kuzu as _kuzu
-
-        _conn = _kuzu.Connection(driver.db)
-        for _q in get_fulltext_indices(GraphProvider.KUZU):
-            try:
-                _conn.execute(_q)
-            except Exception:
-                pass  # インデックスが既に存在する場合は無視
-        _conn.close()
-        graphiti_instance = Graphiti(
-            graph_driver=driver,
-            llm_client=llm_client,
-            embedder=embedder,
-            cross_encoder=cross_encoder,
-        )
-        await graphiti_instance.build_indices_and_constraints()
-        print("Graphiti長期記憶エンジンが初期化されました。")
-    except Exception as e:
-        print(f"警告: Graphitiの初期化に失敗しました。長期記憶なしで動作します: {e}")
-        graphiti_instance = None
-
-
-GRAPHITI_GROUP_ID = "shared"
-
-
-async def retrieve_memory_from_graphiti(query: str) -> str:
-    """Graphitiから関連する長期記憶を検索してテキストで返す。"""
-    if not graphiti_instance:
-        return ""
-    try:
-        results = await graphiti_instance.search(
-            query, group_ids=[GRAPHITI_GROUP_ID], num_results=5
-        )
-        if not results:
-            return ""
-        facts = [r.fact for r in results if hasattr(r, "fact") and r.fact]
-        return "\n".join(facts)
-    except Exception as e:
-        print(f"Graphiti検索エラー: {e}")
-        return ""
-
-
-async def store_memory_to_graphiti(
-    author_name: str, user_content: str, bot_response: str, character_name: str = "Bot"
-):
-    """会話ターンをGraphitiに非同期で保存する。"""
-    if not graphiti_instance:
-        return
-    try:
-        episode_body = (
-            f"{author_name}: {user_content}\n{character_name}: {bot_response}"
-        )
-        await graphiti_instance.add_episode(
-            name=f"turn_{uuid.uuid4().hex[:8]}",
-            episode_body=episode_body,
-            source_description="discord_conversation",
-            reference_time=datetime.datetime.now(pytz.timezone("Asia/Tokyo")),
-            source=EpisodeType.message,
-            group_id=GRAPHITI_GROUP_ID,
-        )
-    except Exception as e:
-        print(f"Graphiti保存エラー: {e}")
-
-
 def initialize_chat_session(character_key_to_load=None):
     """
     ボット起動時に呼び出され、チャットセッションを初期化または復元する。
@@ -853,11 +756,8 @@ async def handle_shared_discord_message(
     # 送信時刻 (ローカルタイム、タイムゾーン付き ISO 8601)
     # 送信時刻を日本標準時(JST)で取得してISO 8601形式で送る
     send_time_iso = datetime.datetime.now(pytz.timezone("Asia/Tokyo")).isoformat()
-    original_message_for_api = (
-        f"<speaker>{author_name}</speaker>\n"
-        f"<timestamp>{send_time_iso}</timestamp>\n"
-        f"<message>{user_message_content}</message>"
-    )
+    original_message_for_api = f"{author_name}\n{send_time_iso}\n{user_message_content}"
+    print(original_message_for_api)
 
     try:
         MAX_HISTORY_LENGTH = 60  # 履歴内の最大メッセージ数 (初期プロンプト + 会話)
@@ -876,18 +776,8 @@ async def handle_shared_discord_message(
         print(f"履歴の整理中にエラーが発生しました: {e}")
         # 致命的ではないかもしれないので、処理を続行する。エラーメッセージを返すことも検討。
 
-    # --- 長期記憶の取得 ---
-    memory_query = f"{author_name}から{active_character_display_name}の発言: {user_message_content}"
-    retrieved_memory = await retrieve_memory_from_graphiti(memory_query)
-    if retrieved_memory:
-        api_input_message = (
-            f"<memory>\n{retrieved_memory}\n</memory>\n{original_message_for_api}"
-        )
-    else:
-        api_input_message = original_message_for_api
-    print(api_input_message)
     # --- Gemini APIへの送信と応答長チェック ---
-    first_api_call_contents = [api_input_message]
+    first_api_call_contents = [original_message_for_api]
     if attachment_contents:
         for attachment_part in attachment_contents:
             first_api_call_contents.append(attachment_part)
@@ -925,14 +815,6 @@ async def handle_shared_discord_message(
                 )
                 add_message_to_db(
                     role="model", author_name="bot", content=bot_response_text
-                )
-                asyncio.create_task(
-                    store_memory_to_graphiti(
-                        author_name,
-                        user_message_content,
-                        bot_response_text,
-                        active_character_display_name,
-                    )
                 )
                 print(
                     f"Geminiからの応答（試行 {attempt + 1}）: {bot_response_text[:200]}..."

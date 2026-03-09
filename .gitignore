@@ -175,5 +175,3 @@ cython_debug/
 
 # Chat history DB
 chat_history.db
-graphiti_db
-graphiti_db.wal
