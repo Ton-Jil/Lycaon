@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import sqlite3
+import subprocess
 from typing import List
 
 import discord
@@ -305,11 +306,87 @@ async def talktome_command(ctx):
         add_message_to_db("model", "bot", bot_reply)
 
 
+async def _announce_update_if_needed():
+    """前回起動時と git commit hash が異なる場合、差分をキャラクター口調でアナウンスする。"""
+    try:
+        current_hash = (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+            )
+            .decode()
+            .strip()
+        )
+    except Exception as e:
+        print(f"アップデート検知: git コマンド失敗のためスキップします: {e}")
+        return
+
+    last_hash = get_setting_from_db("last_deployed_commit", None)
+    set_setting_in_db("last_deployed_commit", current_hash)
+
+    if last_hash is None:
+        print(
+            f"アップデート検知: 初回起動。コミットハッシュを記録しました: {current_hash[:7]}"
+        )
+        return
+
+    if last_hash == current_hash:
+        print("アップデート検知: コミットハッシュに変化なし。通知をスキップします。")
+        return
+
+    try:
+        commit_log = (
+            subprocess.check_output(
+                ["git", "log", "--oneline", f"{last_hash}..{current_hash}"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+    except Exception as e:
+        print(f"アップデート検知: git log 取得失敗: {e}")
+        commit_log = "(変更内容の取得に失敗しました)"
+
+    if not commit_log:
+        print("アップデート検知: 差分コミットなし。通知をスキップします。")
+        return
+
+    print(f"アップデート検知: {last_hash[:7]} → {current_hash[:7]}\n{commit_log}")
+
+    if not shared_chat_session:
+        print(
+            "アップデート検知: チャットセッション未初期化のため通知をスキップします。"
+        )
+        return
+
+    send_time_iso = datetime.datetime.now(pytz.timezone("Asia/Tokyo")).isoformat()
+    update_prompt = (
+        f"システム\n{send_time_iso}\n"
+        f"ボットがアップデートされて再起動しました。以下の変更内容をキャラクターとしての口調で"
+        f"Discordのみんなに自然にお知らせしてください。2000文字以内でまとめてください。\n\n"
+        f"変更内容（git log）:\n{commit_log}"
+    )
+
+    try:
+        response = _send_message_with_retry(shared_chat_session, [update_prompt])
+        bot_reply = response.text
+        if not bot_reply or not bot_reply.strip():
+            return
+
+        for channel_id in TARGET_CHANNEL_IDS:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await channel.send(bot_reply)
+
+    except Exception as e:
+        print(f"アップデート通知中にエラーが発生しました: {e}")
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user.name} がDiscordに接続しました！")
     print("------")
     initialize_chat_session()
+    await _announce_update_if_needed()
 
 
 @bot.event
