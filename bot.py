@@ -7,7 +7,7 @@ from typing import List
 
 import discord
 import pytz
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import (
@@ -36,6 +36,7 @@ TARGET_CHANNEL_IDS = {
 }
 
 MAX_DISCORD_MESSAGE_LENGTH = 2000  # Discord's message character limit
+WEATHER_LOCATION = os.getenv("WEATHER_LOCATION", "東京")
 
 FALLBACK_MIME_TYPES = {
     ".jpg": "image/jpeg",
@@ -381,11 +382,78 @@ async def _announce_update_if_needed():
         print(f"アップデート通知中にエラーが発生しました: {e}")
 
 
+@tasks.loop(
+    time=datetime.time(
+        hour=7,
+        minute=0,
+        second=0,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=9)),
+    )
+)
+async def morning_weather_announcement():
+    """毎朝7時(JST)に天気をキャラクターの口調でアナウンスする。"""
+    global shared_chat_session
+
+    if not shared_chat_session:
+        print("朝の天気アナウンス: チャットセッションが未初期化のためスキップします。")
+        return
+
+    locations = [loc.strip() for loc in WEATHER_LOCATION.split(",") if loc.strip()]
+    if len(locations) > 1:
+        location_str = "・".join(locations)
+        weather_prompt = (
+            f"GoogleSearchを使って{location_str}それぞれの今日の天気予報を調べて、"
+            "キャラクターとしての口調でDiscordの特定の誰かではなく、みんなに朝の天気をまとめてお知らせしてください。"
+            "各地点の気温・降水確率・おすすめの服装など実用的な情報を含め、2000文字以内でまとめてください。"
+        )
+    else:
+        weather_prompt = (
+            f"GoogleSearchを使って{locations[0]}の今日の天気予報を調べて、"
+            "キャラクターとしての口調でDiscordの特定の誰かではなく、みんなに朝の天気をお知らせしてください。"
+            "気温・降水確率・おすすめの服装など実用的な情報を含め、2000文字以内でまとめてください。"
+        )
+
+    send_time_iso = datetime.datetime.now(pytz.timezone("Asia/Tokyo")).isoformat()
+    formatted_prompt = f"システム\n{send_time_iso}\n{weather_prompt}"
+
+    try:
+        response = _send_message_with_retry(shared_chat_session, [formatted_prompt])
+        bot_reply = response.text
+        if not bot_reply or not bot_reply.strip():
+            print("朝の天気アナウンス: 空の応答が返されました。")
+            return
+
+        add_message_to_db("user", "system", formatted_prompt)
+        add_message_to_db("model", "bot", bot_reply)
+
+        for channel_id in TARGET_CHANNEL_IDS:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await channel.send(bot_reply)
+            else:
+                print(
+                    f"朝の天気アナウンス: チャンネルID {channel_id} が見つかりませんでした。"
+                )
+
+    except Exception as e:
+        print(f"朝の天気アナウンス中にエラーが発生しました: {e}")
+
+
+@bot.command("weather")
+@commands.has_permissions(administrator=True)
+async def weather_command(ctx):
+    """天気アナウンスを即時実行するテスト用コマンド（管理者専用）。"""
+    async with ctx.channel.typing():
+        await morning_weather_announcement()
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user.name} がDiscordに接続しました！")
     print("------")
     initialize_chat_session()
+    if not morning_weather_announcement.is_running():
+        morning_weather_announcement.start()
     await _announce_update_if_needed()
 
 
