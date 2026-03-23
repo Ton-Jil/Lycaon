@@ -508,6 +508,77 @@ async def bocchi_news_command(ctx):
         await bocchi_news_announcement()
 
 
+@tasks.loop(
+    time=datetime.time(
+        hour=17,
+        minute=0,
+        second=0,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=9)),
+    )
+)
+async def evening_alcohol_review():
+    """毎晩17時(JST)にきくりに一時切り替えして安酒レビューをアナウンスし、元のキャラに戻す。"""
+    global shared_chat_session, active_character_key
+
+    original_character_key = active_character_key
+
+    try:
+        # きくりに一時切り替え
+        initialize_chat_session("kikuri")
+        if not shared_chat_session:
+            print("安酒レビュー: きくりセッションの初期化に失敗したためスキップします。")
+            return
+
+        review_prompt = (
+            "GoogleSearchを使って今日飲むならこれ！というおすすめの安酒（コンビニ・スーパーで買えるもの）を"
+            "1種類調べてください。値段・味の特徴・どんなシーンに合うかを含め、"
+            "きくりとしての口調でDiscordの特定の誰かではなく、みんなに向けて今日の安酒レビューをしてください。"
+            "2000文字以内でまとめてください。"
+        )
+
+        send_time_iso = datetime.datetime.now(pytz.timezone("Asia/Tokyo")).isoformat()
+        formatted_prompt = f"システム\n{send_time_iso}\n{review_prompt}"
+
+        response = _send_message_with_retry(shared_chat_session, [formatted_prompt])
+        bot_reply = response.text
+        if not bot_reply or not bot_reply.strip():
+            print("安酒レビュー: 空応答のためスキップします。")
+            return
+
+        add_message_to_db("user", "system", formatted_prompt)
+        add_message_to_db("model", "bot", bot_reply)
+
+        for channel_id in TARGET_CHANNEL_IDS:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await channel.send(bot_reply)
+            else:
+                print(
+                    f"安酒レビュー: チャンネルID {channel_id} が見つかりませんでした。"
+                )
+
+    except Exception as e:
+        print(f"安酒レビュー中にエラーが発生しました: {e}")
+
+    finally:
+        # 元のキャラに戻す
+        if original_character_key:
+            initialize_chat_session(original_character_key)
+            print(f"安酒レビュー: キャラクターを「{original_character_key}」に戻しました。")
+            for channel_id in TARGET_CHANNEL_IDS:
+                channel = bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(f"（{active_character_display_name} に戻りました）")
+
+
+@bot.command("alcoholreview")
+@commands.has_permissions(administrator=True)
+async def alcohol_review_command(ctx):
+    """安酒レビューを即時実行するテスト用コマンド（管理者専用）。"""
+    async with ctx.channel.typing():
+        await evening_alcohol_review()
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user.name} がDiscordに接続しました！")
@@ -517,6 +588,8 @@ async def on_ready():
         morning_weather_announcement.start()
     if not bocchi_news_announcement.is_running():
         bocchi_news_announcement.start()
+    if not evening_alcohol_review.is_running():
+        evening_alcohol_review.start()
     await _announce_update_if_needed()
 
 
